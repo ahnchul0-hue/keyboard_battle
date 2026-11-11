@@ -1,0 +1,25 @@
+[package]
+name = "keyboard_battle"
+version = "0.0.1"
+edition = "2024"
+rust-version = "1.97"
+description = "영문 · 국문 · 러스트 코드를 한 곳에서 연습하는 타자 프로그램"
+license = "MIT"
+repository = "https://github.com/ahnchul0-hue/keyboard_battle"
+publish = false
+
+[dependencies]
+# OS 글꼴·접근성·링크 열기는 쓰지 않으므로 기본 기능을 끄고 필요한 것만 켠다.
+eframe = { version = "0.37.0", default-features = false, features = [
+    "clipboard",
+    "default_fonts",
+    "wayland",
+    "wgpu",
+    "x11",
+] }
+
+[profile.release]
+codegen-units = 1
+lto = "fat"
+panic = "abort"
+strip = true
