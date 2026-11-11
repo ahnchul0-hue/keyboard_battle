@@ -5,10 +5,12 @@
 
 use std::collections::VecDeque;
 
-use eframe::egui::text::LayoutJob;
-use eframe::egui::{self, Color32, Event, FontId, Key, RichText, Stroke, TextFormat};
+use eframe::egui::text::{CCursor, LayoutJob};
+use eframe::egui::{self, Align, Event, FontId, Key, Layout, RichText, Stroke, TextFormat};
 use keyboard_battle::keymap::KeyPos;
 use keyboard_battle::typed::{Script, TypedText};
+
+use crate::theme::{self, Palette};
 
 const TYPING_FONT_SIZE: f32 = 24.0;
 const RECENT_EVENTS: usize = 16;
@@ -106,32 +108,7 @@ impl InputStats {
     }
 }
 
-struct Palette {
-    good: Color32,
-    bad: Color32,
-    plain: Color32,
-    dim: Color32,
-    cursor: Color32,
-}
-
-impl Palette {
-    fn of(visuals: &egui::Visuals) -> Self {
-        let good = if visuals.dark_mode {
-            Color32::from_rgb(120, 205, 140)
-        } else {
-            Color32::from_rgb(20, 125, 65)
-        };
-        Self {
-            good,
-            bad: visuals.error_fg_color,
-            plain: visuals.strong_text_color(),
-            dim: visuals.weak_text_color(),
-            cursor: visuals.selection.bg_fill,
-        }
-    }
-}
-
-/// 친 글을 목표 문장과 견주어 색을 입힌다. 조합 중인 글자에는 밑줄을, 그 밖에는 끝에 커서를 둔다.
+/// 친 글을 목표 문장과 견주어 색을 입힌다. 조합 중인 글자에는 밑줄을 긋는다.
 fn typed_job(typed: &TypedText, target: &str, palette: &Palette) -> LayoutJob {
     let format = |color, underline| TextFormat {
         font_id: FontId::monospace(TYPING_FONT_SIZE),
@@ -150,15 +127,27 @@ fn typed_job(typed: &TypedText, target: &str, palette: &Palette) -> LayoutJob {
         };
         job.append(c.encode_utf8(&mut [0; 4]), 0.0, section);
     }
-    match typed.composing() {
-        Some(c) => job.append(c.encode_utf8(&mut [0; 4]), 0.0, format(palette.plain, 2.0)),
-        None => {
-            let mut cursor = format(palette.plain, 0.0);
-            cursor.background = palette.cursor;
-            job.append(" ", 0.0, cursor);
-        }
+    if let Some(c) = typed.composing() {
+        job.append(c.encode_utf8(&mut [0; 4]), 0.0, format(palette.plain, 2.0));
     }
+    // 아무것도 치지 않았을 때도 줄 높이가 유지되고 커서가 설 자리가 있도록 빈칸을 하나 둔다.
+    job.append(" ", 0.0, format(palette.plain, 0.0));
     job
+}
+
+/// 친 글을 그린다. 조합 중인 글자는 밑줄이 커서 노릇을 하므로, 그 밖일 때만 글 끝에 커서를 세운다.
+fn typed_ui(ui: &mut egui::Ui, typed: &TypedText, target: &str, palette: &Palette) {
+    let mut job = typed_job(typed, target, palette);
+    job.wrap.max_width = ui.available_width();
+    let galley = ui.painter().layout_job(job);
+    let (rect, _) = ui.allocate_exact_size(galley.size(), egui::Sense::hover());
+    if typed.composing().is_none() {
+        let end = galley.pos_from_cursor(CCursor::new(typed.done().chars().count()));
+        let top = rect.min + end.min.to_vec2();
+        let caret = egui::Rect::from_min_size(top, egui::vec2(2.0, end.height()));
+        ui.painter().rect_filled(caret, 0.0, palette.caret);
+    }
+    ui.painter().galley(rect.min, galley, palette.plain);
 }
 
 #[derive(Default)]
@@ -285,9 +274,56 @@ impl CheckApp {
                 .size(TYPING_FONT_SIZE);
             ui.label(target.color(target_color));
             if index == self.line {
-                ui.label(typed_job(&self.typed, line.target, palette));
+                typed_ui(ui, &self.typed, line.target, palette);
             }
             ui.add_space(12.0);
+        }
+    }
+
+    fn body_ui(&mut self, ui: &mut egui::Ui, palette: &Palette) {
+        ui.horizontal(|ui| {
+            let title = RichText::new("키보드 배틀 · 0단계 입력 확인").heading();
+            ui.label(title.color(palette.plain));
+            ui.with_layout(Layout::right_to_left(Align::Center), theme::switcher);
+        });
+        ui.add_space(4.0);
+        ui.label(
+            "한/영 키를 누르지 말고 아래 문장을 그대로 치세요. \
+             OS 입력기가 한글 상태든 영문 상태든 똑같이 쳐져야 합니다.",
+        );
+        ui.label(RichText::new("Backspace 지우기 · Esc 줄 비우기").color(palette.dim));
+        ui.add_space(16.0);
+
+        self.lines_ui(ui, palette);
+
+        if self.line == LINES.len() {
+            let done = format!("네 문장을 모두 통과했습니다 ({}회째).", self.rounds);
+            ui.label(RichText::new(done).color(palette.good));
+            ui.label(
+                "OS 입력기를 반대 상태(한글 ↔ 영문)로 바꾼 뒤 \
+                 Enter를 눌러 한 번 더 확인해 주세요.",
+            );
+            ui.add_space(12.0);
+        }
+
+        ui.separator();
+        ui.label(self.stats.verdict());
+        ui.horizontal(|ui| {
+            if ui.button("확인 결과 복사").clicked() {
+                ui.ctx().copy_text(self.report());
+            }
+            ui.checkbox(&mut self.show_recent, "최근 입력 보기");
+        });
+        if self.show_recent {
+            // 목록만 따로 내려 보게 해서, 목록이 길어도 치는 줄이 화면 밖으로 밀려나지 않게 한다.
+            egui::ScrollArea::vertical()
+                .auto_shrink([false, false])
+                .stick_to_bottom(true)
+                .show(ui, |ui| {
+                    for entry in &self.stats.recent {
+                        ui.label(RichText::new(entry).monospace().color(palette.dim));
+                    }
+                });
         }
     }
 }
@@ -305,41 +341,9 @@ impl eframe::App for CheckApp {
         }
         let events = ui.input(|input| input.events.clone());
         self.handle_events(&events);
-        let palette = Palette::of(ui.visuals());
+        let palette = Palette::of(ui.ctx().theme());
 
-        egui::CentralPanel::default().show(ui, |ui| {
-            ui.heading("키보드 배틀 · 0단계 입력 확인");
-            ui.add_space(4.0);
-            ui.label(
-                "한/영 키를 누르지 말고 아래 문장을 그대로 치세요. \
-                 OS 입력기가 한글 상태든 영문 상태든 똑같이 쳐져야 합니다.",
-            );
-            ui.label(RichText::new("Backspace 지우기 · Esc 줄 비우기").color(palette.dim));
-            ui.add_space(16.0);
-
-            self.lines_ui(ui, &palette);
-
-            if self.line == LINES.len() {
-                let rounds = self.rounds;
-                ui.label(RichText::new(format!("네 문장을 모두 통과했습니다 ({rounds}회째).")).color(palette.good));
-                ui.label("OS 입력기를 반대 상태(한글 ↔ 영문)로 바꾼 뒤 Enter를 눌러 한 번 더 확인해 주세요.");
-                ui.add_space(12.0);
-            }
-
-            ui.separator();
-            ui.label(self.stats.verdict());
-            ui.horizontal(|ui| {
-                if ui.button("확인 결과 복사").clicked() {
-                    ui.ctx().copy_text(self.report());
-                }
-                ui.checkbox(&mut self.show_recent, "최근 입력 보기");
-            });
-            if self.show_recent {
-                for entry in &self.stats.recent {
-                    ui.label(RichText::new(entry).monospace().color(palette.dim));
-                }
-            }
-        });
+        egui::CentralPanel::default().show(ui, |ui| self.body_ui(ui, &palette));
 
         // 버튼이 초점을 쥐면 사이띄개와 Enter가 그 버튼을 눌러 버리므로, 초점을 늘 비워 둔다.
         ui.memory_mut(|memory| {

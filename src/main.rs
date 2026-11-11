@@ -2,6 +2,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod app;
+mod theme;
 
 use std::sync::Arc;
 
@@ -50,6 +51,7 @@ fn main() {
         options,
         Box::new(|creation| {
             install_font(&creation.egui_ctx);
+            theme::install(&creation.egui_ctx);
             Ok(Box::new(app::CheckApp::default()))
         }),
     );
