@@ -11,6 +11,11 @@ mod view;
 use std::sync::Arc;
 
 use eframe::egui::{self, FontData, FontDefinitions, FontFamily};
+use keyboard_battle::texts::Deck;
+
+/// 문장을 섞지 않고 실린 순서대로 내게 하는 표시. 시연이나 확인처럼 늘 같은 문장이 필요할 때 쓴다.
+/// 창으로 열 때는 실행 인자 `--in-order`로, 브라우저에서는 주소 끝의 `#in-order`로 준다.
+const IN_ORDER: &str = "in-order";
 
 const FONT_NAME: &str = "D2Coding";
 static FONT: &[u8] = include_bytes!("../assets/fonts/D2Coding-Regular.ttf");
@@ -31,11 +36,46 @@ fn install_font(ctx: &egui::Context) {
     ctx.set_fonts(fonts);
 }
 
+/// 켤 때마다 달라지는 수. 문장을 섞는 씨앗으로 쓴다.
+#[cfg(not(target_arch = "wasm32"))]
+fn seed() -> u64 {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    // 시계가 1970년보다 앞에 맞춰져 있으면 0을 쓴다. 섞이는 순서가 늘 같을 뿐 프로그램은 돈다.
+    let since_epoch = SystemTime::now().duration_since(UNIX_EPOCH);
+    since_epoch.map_or(0, |time| time.as_nanos() as u64)
+}
+
+/// 브라우저에서는 표준 라이브러리의 시계를 쓸 수 없어 브라우저의 난수를 쓴다.
+#[cfg(target_arch = "wasm32")]
+fn seed() -> u64 {
+    (eframe::web_sys::js_sys::Math::random() * (1u64 << 53) as f64) as u64
+}
+
+/// 문장을 실린 순서대로 내 달라는 표시가 있는지.
+fn wants_listed_order(creation: &eframe::CreationContext<'_>) -> bool {
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        let _ = creation;
+        std::env::args().any(|arg| arg.strip_prefix("--") == Some(IN_ORDER))
+    }
+    #[cfg(target_arch = "wasm32")]
+    {
+        let hash = &creation.integration_info.web_info.location.hash;
+        hash.strip_prefix('#') == Some(IN_ORDER)
+    }
+}
+
 /// 창이나 웹 화면이 준비되면 글꼴과 색을 넣고 연습 화면을 만든다.
 fn create_app(creation: &eframe::CreationContext<'_>) -> Box<dyn eframe::App> {
     install_font(&creation.egui_ctx);
     theme::install(&creation.egui_ctx);
-    Box::new(app::PracticeApp::default())
+    // 켤 때마다 다른 문장으로 시작한다.
+    let deck = if wants_listed_order(creation) {
+        Deck::in_order()
+    } else {
+        Deck::shuffled(seed())
+    };
+    Box::new(app::PracticeApp::new(deck))
 }
 
 /// 콘솔이 없어 오류가 보이지 않으므로, 실행 파일 옆에 적어 둔다.

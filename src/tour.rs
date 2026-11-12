@@ -43,7 +43,7 @@ impl Script {
 
 /// 둘러보기를 시작한다. `now`는 시작하는 시각(초)이다.
 ///
-/// 첫 과정의 문장을 쓰되, 실제로 치는 과정과는 따로 논다.
+/// 늘 같은 첫 과정의 문장을 쓰고, 실제로 치는 과정과는 따로 논다.
 pub fn tour(now: f64) -> Player {
     let mut script = Script {
         at: 0.0,
@@ -74,7 +74,7 @@ pub fn tour(now: f64) -> Player {
     script.say(last, 2.4);
     // 마지막 설명을 읽을 시간을 벌어 둔다.
     script.say(last, 0.0);
-    Player::new(texts::round(0), script.steps, "", now)
+    Player::new(texts::opening(), script.steps, "", now)
 }
 
 #[cfg(test)]

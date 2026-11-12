@@ -10,7 +10,7 @@ use eframe::egui::{self, Align, Event, Key, Layout, RichText};
 use keyboard_battle::measure::Tally;
 use keyboard_battle::player::Player;
 use keyboard_battle::round::Round;
-use keyboard_battle::texts;
+use keyboard_battle::texts::Deck;
 use keyboard_battle::tour;
 
 use crate::input::{InputStats, key_pos};
@@ -39,6 +39,8 @@ const REPLAY_CAPTION: &str = "다시 보기";
 const LIVE_EVERY: f64 = 1.0;
 
 pub struct PracticeApp {
+    /// 과정마다 문장을 골라 주는 곳.
+    deck: Deck,
     /// 지금 과정의 번호 (0부터).
     number: usize,
     round: Round,
@@ -68,11 +70,13 @@ pub struct PracticeApp {
     renderer: String,
 }
 
-impl Default for PracticeApp {
-    fn default() -> Self {
+impl PracticeApp {
+    /// `deck`이 내는 문장으로 첫 과정을 시작한다.
+    pub fn new(mut deck: Deck) -> Self {
         Self {
             number: 0,
-            round: Round::new(texts::round(0)),
+            round: Round::new(deck.deal()),
+            deck,
             finished_at: None,
             passed_at: None,
             typed_at: None,
@@ -90,9 +94,7 @@ impl Default for PracticeApp {
             renderer: String::new(),
         }
     }
-}
 
-impl PracticeApp {
     /// 이번 화면 갱신에 들어온 입력을 처리한다. `now`는 지금 시각(초)이다.
     fn handle_events(&mut self, events: &[Event], now: f64) {
         let pressed = |event: &Event| matches!(event, Event::Key { pressed: true, .. });
@@ -198,10 +200,14 @@ impl PracticeApp {
             Choice::Next | Choice::Retry => {
                 self.history
                     .push(self.round.results().iter().copied().sum());
-                if choice == Choice::Next {
+                // 다음 과정은 새 문장으로, 다시 치기는 방금 친 문장 그대로 한다.
+                let lines = if choice == Choice::Next {
                     self.number += 1;
-                }
-                self.round = Round::new(texts::round(self.number));
+                    self.deck.deal()
+                } else {
+                    self.round.lines().to_vec()
+                };
+                self.round = Round::new(lines);
                 self.finished_at = None;
                 self.passed_at = None;
             }
@@ -604,7 +610,7 @@ mod tests {
 
     #[test]
     fn typing_a_line_moves_on_to_the_next() {
-        let mut app = PracticeApp::default();
+        let mut app = PracticeApp::new(Deck::in_order());
         let first = app.round.lines()[0].text;
         type_line(&mut app, 0.0);
         assert_eq!(app.round.results().len(), 1);
@@ -617,7 +623,7 @@ mod tests {
     /// 위쪽 숫자는 글쇠마다 바뀌지 않고, 1초가 지나거나 문장을 끝냈을 때만 바뀐다.
     #[test]
     fn live_numbers_change_once_a_second_or_when_a_line_ends() {
-        let mut app = PracticeApp::default();
+        let mut app = PracticeApp::new(Deck::in_order());
         app.refresh_live(0.0);
         assert_eq!(app.live.presses, 0);
 
@@ -632,7 +638,7 @@ mod tests {
         app.refresh_live(6.0);
         assert_eq!(app.live.presses, 4);
 
-        let mut app = PracticeApp::default();
+        let mut app = PracticeApp::new(Deck::in_order());
         let done = type_line(&mut app, 0.0);
         app.refresh_live(done);
         let first = app.round.results()[0];
@@ -651,7 +657,7 @@ mod tests {
 
     #[test]
     fn a_line_just_passed_glows_and_then_fades() {
-        let mut app = PracticeApp::default();
+        let mut app = PracticeApp::new(Deck::in_order());
         assert_eq!(app.glow(0, 0.0), 0.0);
         let done = type_line(&mut app, 0.0);
         assert_eq!(app.glow(0, done), 1.0);
@@ -667,7 +673,7 @@ mod tests {
 
     #[test]
     fn keys_the_ime_took_first_are_still_typed() {
-        let mut app = PracticeApp::default();
+        let mut app = PracticeApp::new(Deck::in_order());
         // 첫 문장은 '다'로 시작한다.
         app.handle_events(&press('ㄷ', false), 0.0);
         app.handle_events(&press('ㅏ', false), 0.1);
@@ -677,7 +683,7 @@ mod tests {
 
     #[test]
     fn finishing_a_round_opens_the_result_and_enter_brings_new_sentences() {
-        let mut app = PracticeApp::default();
+        let mut app = PracticeApp::new(Deck::in_order());
         let first_round: Vec<&str> = app.round.lines().iter().map(|line| line.text).collect();
         let done = type_round(&mut app, 0.0);
         assert_eq!(app.finished_at, Some(done));
@@ -693,7 +699,7 @@ mod tests {
     /// 문장 끝에 버릇처럼 누른 Enter로 결과 창이 닫히면 안 된다.
     #[test]
     fn enter_right_after_finishing_does_not_skip_the_result() {
-        let mut app = PracticeApp::default();
+        let mut app = PracticeApp::new(Deck::in_order());
         let done = type_round(&mut app, 0.0);
         app.handle_events(&named(Key::Enter), done + 0.1);
         app.handle_events(&press('ㄱ', true), done + 0.2);
@@ -703,7 +709,7 @@ mod tests {
 
     #[test]
     fn r_repeats_the_same_sentences_and_keeps_the_record() {
-        let mut app = PracticeApp::default();
+        let mut app = PracticeApp::new(Deck::in_order());
         let first_round = app.round.lines().to_vec();
         let done = type_round(&mut app, 0.0);
         // 한글 상태에서 R 자리의 글쇠는 'ㄱ'이지만, 자리로 읽으므로 똑같이 통한다.
@@ -717,7 +723,7 @@ mod tests {
     /// 결과 창에서 V를 누르면 방금 친 과정을 처음부터 되감아 보이고, 끝나면 결과 창으로 돌아온다.
     #[test]
     fn v_replays_the_round_and_returns_to_the_result() {
-        let mut app = PracticeApp::default();
+        let mut app = PracticeApp::new(Deck::in_order());
         let done = type_round(&mut app, 0.0);
         let record = app.round.results().to_vec();
         // 한글 상태에서 V 자리의 글쇠는 'ㅍ'이다.
@@ -742,7 +748,7 @@ mod tests {
     /// 둘러보기는 따로 노는 과정을 보여 주고, 끝나면 치던 과정으로 그대로 돌아온다.
     #[test]
     fn f1_runs_the_tour_without_touching_the_real_round() {
-        let mut app = PracticeApp::default();
+        let mut app = PracticeApp::new(Deck::in_order());
         app.handle_events(&named(Key::F1), 1.0);
         assert!(app.player.is_some());
         app.play(1.0 + 10.0);
@@ -759,13 +765,13 @@ mod tests {
 
     #[test]
     fn the_tour_does_not_start_in_the_middle_of_a_line() {
-        let mut app = PracticeApp::default();
+        let mut app = PracticeApp::new(Deck::in_order());
         app.handle_events(&press('ㄷ', true), 0.0);
         app.handle_events(&named(Key::F1), 1.0);
         assert!(app.player.is_none());
 
         // 과정을 끝내 결과 창이 떠 있을 때도 시작하지 않는다.
-        let mut app = PracticeApp::default();
+        let mut app = PracticeApp::new(Deck::in_order());
         let done = type_round(&mut app, 0.0);
         app.handle_events(&named(Key::F1), done + 5.0);
         assert!(app.player.is_none());
@@ -774,7 +780,7 @@ mod tests {
     /// 치는 동안에만 주변을 흐리게 하고, 손을 멈추면 되돌린다.
     #[test]
     fn focus_holds_while_typing_and_lets_go_after_a_pause() {
-        let mut app = PracticeApp::default();
+        let mut app = PracticeApp::new(Deck::in_order());
         assert!(!app.focusing(0.0));
         app.handle_events(&press('ㄷ', true), 10.0);
         assert!(app.focusing(10.0) && app.focusing(10.0 + FOCUS_HOLD - 0.1));
@@ -786,14 +792,14 @@ mod tests {
         assert!(!app.focusing(20.0));
 
         // 결과 창이 떠 있을 때는 흐리게 하지 않는다.
-        let mut app = PracticeApp::default();
+        let mut app = PracticeApp::new(Deck::in_order());
         let done = type_round(&mut app, 0.0);
         assert!(!app.focusing(done));
     }
 
     #[test]
     fn reaching_for_the_mouse_brings_the_surroundings_back() {
-        let mut app = PracticeApp::default();
+        let mut app = PracticeApp::new(Deck::in_order());
         app.handle_events(&press('ㄷ', true), 10.0);
         // 손바닥이 터치패드를 스친 정도로는 돌아오지 않는다.
         app.pointer_moved(POINTER_REACH / 2.0, false);
@@ -818,7 +824,7 @@ mod tests {
 
     #[test]
     fn escape_stops_the_replay() {
-        let mut app = PracticeApp::default();
+        let mut app = PracticeApp::new(Deck::in_order());
         let done = type_round(&mut app, 0.0);
         app.choose(Choice::Replay, done + 1.0);
         assert!(app.player.is_some());
@@ -829,7 +835,7 @@ mod tests {
 
     #[test]
     fn the_result_compares_with_the_previous_round_and_the_best() {
-        let mut app = PracticeApp::default();
+        let mut app = PracticeApp::new(Deck::in_order());
         assert!(app.summary(0.0).previous.is_none() && app.summary(0.0).best.is_none());
         let done = type_round(&mut app, 0.0);
         app.handle_events(&named(Key::Enter), done + 1.0);

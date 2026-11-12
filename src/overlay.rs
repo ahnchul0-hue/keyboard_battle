@@ -239,7 +239,7 @@ mod tests {
     /// 치고 있는 자리 말고는 칠 문장의 글자가 그대로 보인다.
     #[test]
     fn typing_any_sentence_keeps_the_sentence_in_view() {
-        for sentence in (0..10).flat_map(texts::round) {
+        for sentence in texts::all() {
             let script = sentence.kind.script();
             let length = sentence.text.chars().count();
             let mut typed = TypedText::default();

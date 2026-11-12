@@ -17,7 +17,8 @@ export DISPLAY=:94
 Xvfb "$DISPLAY" -screen 0 960x700x24 >/dev/null 2>&1 &
 xvfb=$!
 sleep 1
-target/release/keyboard_battle >"$work/app.log" 2>&1 &
+# 대본이 치는 문장이 나오도록, 문장을 섞지 않고 실린 순서대로 내게 한다.
+target/release/keyboard_battle --in-order >"$work/app.log" 2>&1 &
 app=$!
 trap 'kill "$app" "$xvfb" 2>/dev/null || true' EXIT
 
