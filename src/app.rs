@@ -23,6 +23,8 @@ const TYPING_FONT_SIZE: f32 = 24.0;
 const RESULT_GRACE: f64 = 0.8;
 /// 속도는 이만큼(초) 친 뒤부터 보여 준다. 처음 한두 글쇠로 낸 속도는 터무니없이 크다.
 const LIVE_SPEED_AFTER: f64 = 2.0;
+/// 문장을 끝낸 블럭의 테두리가 초록으로 빛나는 시간(초).
+const PASS_GLOW: f64 = 0.35;
 /// 위쪽의 속도·정확도·시간을 고쳐 적는 간격(초). 글쇠마다 바뀌는 숫자는 치는 눈을 끌어당긴다.
 const LIVE_EVERY: f64 = 1.0;
 
@@ -32,6 +34,8 @@ pub struct PracticeApp {
     round: Round,
     /// 과정을 끝낸 시각(초). 값이 있는 동안 결과 창이 떠 있다.
     finished_at: Option<f64>,
+    /// 막 끝낸 문장의 번호와 끝낸 시각(초). 그 블럭을 잠깐 빛나게 한다.
+    passed_at: Option<(usize, f64)>,
     /// 이번 실행에서 끝낸 과정들의 기록.
     history: Vec<Tally>,
     stats: InputStats,
@@ -52,6 +56,7 @@ impl Default for PracticeApp {
             number: 0,
             round: Round::new(texts::round(0)),
             finished_at: None,
+            passed_at: None,
             history: Vec::new(),
             stats: InputStats::default(),
             show_recent: false,
@@ -97,7 +102,11 @@ impl PracticeApp {
                             // 브라우저는 글쇠와 문자를 따로 보내지 않으므로 이 판정을 쓸 수 없다.
                             let os_sent_text = cfg!(target_arch = "wasm32")
                                 || matches!(events.get(index + 1), Some(Event::Text(_)));
+                            let line = self.round.results().len();
                             self.press(*physical_key, shift, os_sent_text, now);
+                            if self.round.results().len() > line {
+                                self.passed_at = Some((line, now));
+                            }
                         }
                     }
                     if self.round.is_finished() {
@@ -144,6 +153,7 @@ impl PracticeApp {
         }
         self.round = Round::new(texts::round(self.number));
         self.finished_at = None;
+        self.passed_at = None;
     }
 
     /// 위쪽에 보여 주는 기록을 고쳐 적는다. 정해진 간격이 지났거나 문장을 막 끝냈을 때만 바꾼다.
@@ -236,12 +246,25 @@ impl PracticeApp {
         view::progress_bar(ui, fraction, palette);
     }
 
+    /// `index`번째 블럭이 막 끝낸 문장으로서 빛나는 정도 (0 ~ 1).
+    fn glow(&self, index: usize, now: f64) -> f32 {
+        match self.passed_at {
+            Some((line, at)) if line == index => {
+                (1.0 - (now - at) / PASS_GLOW).clamp(0.0, 1.0) as f32
+            }
+            _ => 0.0,
+        }
+    }
+
     /// 문장 하나를 담은 블럭.
-    fn card_ui(&self, ui: &mut egui::Ui, look: &Look<'_>, index: usize) {
+    fn card_ui(&self, ui: &mut egui::Ui, look: &Look<'_>, index: usize, now: f64) {
         let line = self.round.lines()[index];
         let is_current = self.round.results().len() == index;
         let stage = match self.round.results().get(index) {
-            Some(tally) => Stage::Done(tally),
+            Some(tally) => Stage::Done {
+                tally,
+                glow: self.glow(index, now),
+            },
             None if is_current => Stage::Current(self.round.typed()),
             None => Stage::Waiting,
         };
@@ -293,13 +316,13 @@ impl PracticeApp {
     }
 
     /// 문장 블럭들과 그 아래의 도움말.
-    fn blocks_ui(&mut self, ui: &mut egui::Ui, palette: &Palette) {
+    fn blocks_ui(&mut self, ui: &mut egui::Ui, palette: &Palette, now: f64) {
         let look = Look {
             palette,
             size: TYPING_FONT_SIZE,
         };
         for index in 0..self.round.lines().len() {
-            self.card_ui(ui, &look, index);
+            self.card_ui(ui, &look, index, now);
         }
         let help = "문장을 정확히 다 치면 다음 문장으로 넘어갑니다 · \
                     Backspace 지우기 · Esc 줄 비우기 · 한/영 키는 누르지 않습니다";
@@ -331,7 +354,7 @@ impl eframe::App for PracticeApp {
             // 창이 작으면 블럭이 다 들어오지 않으므로 블럭 쪽만 내려 볼 수 있게 한다.
             egui::ScrollArea::vertical()
                 .auto_shrink([false, false])
-                .show(ui, |ui| self.blocks_ui(ui, &palette));
+                .show(ui, |ui| self.blocks_ui(ui, &palette, now));
         });
 
         if self.finished_at.is_some() {
@@ -344,6 +367,11 @@ impl eframe::App for PracticeApp {
             let wait = (self.live_at + LIVE_EVERY - now).max(0.05);
             ui.ctx()
                 .request_repaint_after(Duration::from_secs_f64(wait));
+        }
+
+        if self.passed_at.is_some_and(|(_, at)| now - at < PASS_GLOW) {
+            // 빛이 다 사그라들 때까지 화면을 이어서 그린다.
+            ui.ctx().request_repaint();
         }
 
         // 버튼이 초점을 쥐면 사이띄개와 Enter가 그 버튼을 눌러 버리므로, 초점을 늘 비워 둔다.
@@ -459,6 +487,22 @@ mod tests {
         app.leave_result(Choice::Next);
         app.refresh_live(done + 100.1);
         assert_eq!(app.live, Tally::default());
+    }
+
+    #[test]
+    fn a_line_just_passed_glows_and_then_fades() {
+        let mut app = PracticeApp::default();
+        assert_eq!(app.glow(0, 0.0), 0.0);
+        let done = type_line(&mut app, 0.0);
+        assert_eq!(app.glow(0, done), 1.0);
+        assert_eq!(app.glow(1, done), 0.0, "다른 블럭은 빛나지 않는다");
+        let halfway = app.glow(0, done + PASS_GLOW / 2.0);
+        assert!((halfway - 0.5).abs() < 0.01);
+        assert_eq!(app.glow(0, done + PASS_GLOW), 0.0);
+
+        // 다음 문장을 끝내면 빛이 그 블럭으로 옮겨 간다.
+        let done = type_line(&mut app, done + 1.0);
+        assert_eq!((app.glow(0, done), app.glow(1, done)), (0.0, 1.0));
     }
 
     #[test]

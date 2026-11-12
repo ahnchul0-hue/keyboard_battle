@@ -24,8 +24,11 @@ pub struct Look<'a> {
 /// 블럭 하나가 놓인 처지.
 #[derive(Clone, Copy)]
 pub enum Stage<'a> {
-    /// 끝낸 문장과 그 기록.
-    Done(&'a Tally),
+    /// 끝낸 문장과 그 기록. `glow`는 막 끝낸 블럭이 빛나는 정도(0 ~ 1)다.
+    Done {
+        tally: &'a Tally,
+        glow: f32,
+    },
     /// 지금 칠 문장과 거기에 친 글.
     Current(&'a TypedText),
     Waiting,
@@ -131,7 +134,7 @@ pub fn card(
 ) -> egui::Response {
     let palette = look.palette;
     let (status, status_color) = match stage {
-        Stage::Done(_) => ("통과", palette.good),
+        Stage::Done { .. } => ("통과", palette.good),
         Stage::Current(_) => ("지금", palette.plain),
         Stage::Waiting => ("대기", palette.dim),
     };
@@ -142,7 +145,14 @@ pub fn card(
     // 지금 칠 블럭은 테두리를 굵게 한다. 나머지는 그만큼 바깥을 띄워 블럭 크기가 달라지지 않게 한다.
     let frame = match stage {
         Stage::Current(_) => frame.stroke(Stroke::new(2.0, palette.caret)),
-        _ => frame
+        // 막 끝낸 블럭은 테두리가 잠깐 초록으로 굵어졌다가 돌아온다.
+        Stage::Done { glow, .. } => frame
+            .stroke(Stroke::new(
+                1.0 + glow,
+                palette.border.lerp_to_gamma(palette.good, glow),
+            ))
+            .outer_margin(1.0 - glow),
+        Stage::Waiting => frame
             .stroke(Stroke::new(1.0, palette.border))
             .outer_margin(1.0),
     };
@@ -151,7 +161,7 @@ pub fn card(
         ui.horizontal(|ui| {
             let label = format!("{status} · {}", line.kind.name());
             ui.label(RichText::new(label).color(status_color));
-            if let Stage::Done(tally) = stage {
+            if let Stage::Done { tally, .. } = stage {
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                     let record = format!(
                         "{:.0} 타/분 · 정확도 {:.0}%",
