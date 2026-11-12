@@ -18,9 +18,17 @@
           background: #f8f8f8;
         }
       }
+      /* 가장 긴 문장이 한 줄에 들어오려면 화면 너비가 620px은 되어야 한다.
+         그보다 좁은 창에서는 화면을 더 줄이지 않고 옆으로 밀어 보게 한다. */
+      #frame {
+        height: 100%;
+        overflow-x: auto;
+        overflow-y: hidden;
+      }
       canvas {
         display: block;
         width: 100%;
+        min-width: 620px;
         height: 100%;
         outline: none;
       }
@@ -35,7 +43,9 @@
     </style>
   </head>
   <body>
-    <canvas id="screen"></canvas>
+    <div id="frame">
+      <canvas id="screen"></canvas>
+    </div>
     <p id="note">불러오는 중…</p>
     <script type="module">
       import init from "./keyboard_battle.js";
