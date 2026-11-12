@@ -26,6 +26,8 @@ pub enum Choice {
     Next,
     /// 같은 문장을 다시 친다.
     Retry,
+    /// 방금 친 과정을 되감아 본다.
+    Replay,
 }
 
 /// 결과 창에 보여 줄 내용.
@@ -248,9 +250,12 @@ pub fn show(ctx: &egui::Context, palette: &Palette, summary: &Summary<'_>) -> Op
             if ui.add(next).clicked() {
                 return Some(Choice::Next);
             }
-            ui.button("같은 문장 다시 (R)")
+            if ui.button("같은 문장 다시 (R)").clicked() {
+                return Some(Choice::Retry);
+            }
+            ui.button("다시 보기 (V)")
                 .clicked()
-                .then_some(Choice::Retry)
+                .then_some(Choice::Replay)
         })
         .inner
     });

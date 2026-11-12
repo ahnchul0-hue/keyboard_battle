@@ -10,6 +10,17 @@ use crate::measure::{Tally, char_of_unit, common_prefix, key_units};
 use crate::texts::Sentence;
 use crate::typed::TypedText;
 
+/// 과정을 치는 동안 일어나는 일 하나.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Action {
+    /// 문자 글쇠를 누른다. 뒤의 값은 Shift를 함께 눌렀는지다.
+    Press(KeyPos, bool),
+    /// 조합 중이면 낱자 하나를, 아니면 글자 하나를 지운다.
+    Backspace,
+    /// 지금 문장에 친 글을 모두 지운다. 누른 글쇠 수와 시간은 그대로 남는다.
+    Clear,
+}
+
 #[derive(Clone, Debug)]
 pub struct Round {
     lines: Vec<Sentence>,
@@ -29,6 +40,8 @@ pub struct Round {
     misses: BTreeMap<char, u32>,
     /// 문장마다, 틀리기 시작한 자리(글자 번호)들.
     slips: Vec<BTreeSet<usize>>,
+    /// 일어난 일과 그 시각(초). 그대로 다시 해 보이면 같은 과정이 된다.
+    log: Vec<(f64, Action)>,
 }
 
 impl Round {
@@ -44,6 +57,7 @@ impl Round {
             started_at: None,
             misses: BTreeMap::new(),
             slips: vec![BTreeSet::new(); lines.len()],
+            log: Vec::new(),
             lines,
         }
     }
@@ -76,8 +90,40 @@ impl Round {
         common_prefix(&key_units(&self.typed.text()), &self.target)
     }
 
-    /// 문자 글쇠 하나를 누른다. `now`는 누른 시각(초)이다.
+    /// 일 하나를 한다. `now`는 그 일이 일어난 시각(초)이다. 과정이 끝난 뒤의 일은 버린다.
+    pub fn apply(&mut self, action: Action, now: f64) {
+        if self.is_finished() {
+            return;
+        }
+        self.log.push((now, action));
+        match action {
+            Action::Press(pos, shift) => self.press_key(pos, shift, now),
+            Action::Backspace => self.typed.backspace(),
+            Action::Clear => self.typed.clear(),
+        }
+    }
+
+    /// 문자 글쇠 하나를 누른다.
     pub fn press(&mut self, pos: KeyPos, shift: bool, now: f64) {
+        self.apply(Action::Press(pos, shift), now);
+    }
+
+    /// 조합 중이면 낱자 하나를, 아니면 글자 하나를 지운다.
+    pub fn backspace(&mut self, now: f64) {
+        self.apply(Action::Backspace, now);
+    }
+
+    /// 지금 문장에 친 글을 모두 지운다. 누른 글쇠 수와 시간은 그대로 남는다.
+    pub fn clear_line(&mut self, now: f64) {
+        self.apply(Action::Clear, now);
+    }
+
+    /// 지금까지 일어난 일과 그 시각(초).
+    pub fn log(&self) -> &[(f64, Action)] {
+        &self.log
+    }
+
+    fn press_key(&mut self, pos: KeyPos, shift: bool, now: f64) {
         let Some(line) = self.current().copied() else {
             return;
         };
@@ -126,16 +172,6 @@ impl Round {
             .current()
             .map(|next| key_units(next.text))
             .unwrap_or_default();
-    }
-
-    /// 조합 중이면 낱자 하나를, 아니면 글자 하나를 지운다.
-    pub fn backspace(&mut self) {
-        self.typed.backspace();
-    }
-
-    /// 지금 문장에 친 글을 모두 지운다. 누른 글쇠 수와 시간은 그대로 남는다.
-    pub fn clear_line(&mut self) {
-        self.typed.clear();
     }
 
     /// 지금 문장의 시간을 재고 있는지. 문장의 첫 글쇠를 누른 때부터 그 문장을 끝낼 때까지다.
@@ -242,7 +278,7 @@ mod tests {
         let mut round = round(&[(Kind::Hangul, "가나")]);
         press_all(&mut round, "ㄱㅓ", 0.0);
         assert_eq!(round.progress(), 0.25, "틀린 글쇠는 진행에 넣지 않는다");
-        round.backspace();
+        round.backspace(0.0);
         press_all(&mut round, "ㅏㄴㅏ", 2.0);
 
         let line = round.results()[0];
@@ -270,8 +306,8 @@ mod tests {
         assert!(round.results().is_empty());
 
         // 지우고 고치면 그대로 이어서 칠 수 있다.
-        round.backspace();
-        round.backspace();
+        round.backspace(0.0);
+        round.backspace(0.0);
         press_all(&mut round, "at", 6.0);
         assert_eq!(round.results().len(), 1);
     }
@@ -292,11 +328,11 @@ mod tests {
         let mut round = round(&[(Kind::Hangul, "가나다"), (Kind::English, "cat")]);
         // '나'의 홀소리를 두 번 틀리고, '다'의 닿소리를 한 번 틀린다.
         press_all(&mut round, "ㄱㅏㄴㅓ", 0.0);
-        round.backspace();
+        round.backspace(0.0);
         press_all(&mut round, "ㅗ", 1.0);
-        round.backspace();
+        round.backspace(0.0);
         press_all(&mut round, "ㅏㅁ", 2.0);
-        round.backspace();
+        round.backspace(0.0);
         press_all(&mut round, "ㄷㅏ", 3.0);
         // 둘째 문장은 틀리지 않는다.
         press_all(&mut round, "cat", 4.0);
@@ -310,11 +346,38 @@ mod tests {
         assert!(round.is_finished());
     }
 
+    /// 적어 둔 일을 새 과정에 그대로 다시 하면 같은 기록이 나온다.
+    #[test]
+    fn replaying_the_log_gives_the_same_round() {
+        let mut round = round(&[(Kind::Hangul, "가나"), (Kind::English, "ok")]);
+        press_all(&mut round, "ㄱㅓ", 0.0);
+        round.backspace(2.5);
+        press_all(&mut round, "ㅏㄴㅏ", 3.0);
+        press_all(&mut round, "x", 7.0);
+        round.clear_line(8.0);
+        press_all(&mut round, "ok", 9.0);
+        press_all(&mut round, "z", 20.0);
+        assert!(round.is_finished());
+        assert_eq!(
+            round.log().len(),
+            10,
+            "과정이 끝난 뒤에 누른 것은 적지 않는다"
+        );
+
+        let mut again = Round::new(round.lines().to_vec());
+        for &(time, action) in round.log() {
+            again.apply(action, time);
+        }
+        assert_eq!(again.results(), round.results());
+        assert_eq!(again.misses(), round.misses());
+        assert_eq!(again.slips(), round.slips());
+    }
+
     #[test]
     fn clearing_the_line_keeps_what_was_pressed() {
         let mut round = round(&[(Kind::English, "ab")]);
         press_all(&mut round, "x", 0.0);
-        round.clear_line();
+        round.clear_line(0.0);
         press_all(&mut round, "ab", 1.0);
         let line = round.results()[0];
         assert_eq!((line.presses, line.wrong, line.seconds), (3, 1, 2.0));
@@ -347,7 +410,7 @@ mod tests {
             for unit in wrong_then_right.chars() {
                 if unit == 'x' {
                     press_all(&mut round, "x", 0.0);
-                    round.backspace();
+                    round.backspace(0.0);
                 } else {
                     press_all(&mut round, &unit.to_string(), 0.0);
                 }

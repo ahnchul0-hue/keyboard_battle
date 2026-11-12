@@ -8,6 +8,7 @@ use std::time::Duration;
 
 use eframe::egui::{self, Align, Event, Key, Layout, RichText};
 use keyboard_battle::measure::Tally;
+use keyboard_battle::player::Player;
 use keyboard_battle::round::Round;
 use keyboard_battle::texts;
 
@@ -24,6 +25,8 @@ const RESULT_GRACE: f64 = 0.8;
 const LIVE_SPEED_AFTER: f64 = 2.0;
 /// 문장을 끝낸 블럭의 테두리가 초록으로 빛나는 시간(초).
 const PASS_GLOW: f64 = 0.35;
+/// 방금 친 과정을 되감아 보이는 동안 화면에 띄우는 설명.
+const REPLAY_CAPTION: &str = "다시 보기";
 /// 위쪽의 속도·정확도·시간을 고쳐 적는 간격(초). 글쇠마다 바뀌는 숫자는 치는 눈을 끌어당긴다.
 const LIVE_EVERY: f64 = 1.0;
 
@@ -37,6 +40,8 @@ pub struct PracticeApp {
     passed_at: Option<(usize, f64)>,
     /// 이번 실행에서 끝낸 과정들의 기록.
     history: Vec<Tally>,
+    /// 방금 친 과정을 되감아 보이는 중이면 그 장치. 이 동안에는 화면이 이쪽의 과정을 보여 준다.
+    player: Option<Player>,
     stats: InputStats,
     show_recent: bool,
     settings: Settings,
@@ -59,6 +64,7 @@ impl Default for PracticeApp {
             finished_at: None,
             passed_at: None,
             history: Vec::new(),
+            player: None,
             stats: InputStats::default(),
             show_recent: false,
             settings: Settings::default(),
@@ -77,6 +83,23 @@ impl PracticeApp {
     fn handle_events(&mut self, events: &[Event], now: f64) {
         let pressed = |event: &Event| matches!(event, Event::Key { pressed: true, .. });
         self.follow = events.iter().any(pressed);
+        if self.player.is_some() {
+            // 되감아 보이는 동안에는 치는 것을 받지 않는다. Esc로 그만둘 수만 있다.
+            let escape = |event: &Event| {
+                matches!(
+                    event,
+                    Event::Key {
+                        key: Key::Escape,
+                        pressed: true,
+                        ..
+                    }
+                )
+            };
+            if events.iter().any(escape) {
+                self.player = None;
+            }
+            return;
+        }
         for (index, event) in events.iter().enumerate() {
             match event {
                 Event::Key {
@@ -94,13 +117,13 @@ impl PracticeApp {
                     }
                     if let Some(finished_at) = self.finished_at {
                         if now - finished_at >= RESULT_GRACE {
-                            self.result_key(*key, *physical_key);
+                            self.result_key(*key, *physical_key, now);
                         }
                         continue;
                     }
                     match key {
-                        Key::Escape => self.round.clear_line(),
-                        Key::Backspace => self.round.backspace(),
+                        Key::Escape => self.round.clear_line(now),
+                        Key::Backspace => self.round.backspace(now),
                         _ => {
                             // 브라우저는 글쇠와 문자를 따로 보내지 않으므로 이 판정을 쓸 수 없다.
                             let os_sent_text = cfg!(target_arch = "wasm32")
@@ -138,31 +161,57 @@ impl PracticeApp {
         }
     }
 
-    /// 결과 창이 떠 있을 때의 글쇠. R은 OS 입력기 상태와 무관하도록 글쇠 자리로 읽는다.
-    fn result_key(&mut self, key: Key, physical_key: Option<Key>) {
+    /// 결과 창이 떠 있을 때의 글쇠. R과 V는 OS 입력기 상태와 무관하도록 글쇠 자리로 읽는다.
+    fn result_key(&mut self, key: Key, physical_key: Option<Key>, now: f64) {
         if key == Key::Enter {
-            self.leave_result(Choice::Next);
+            self.choose(Choice::Next, now);
         } else if physical_key == Some(Key::R) {
-            self.leave_result(Choice::Retry);
+            self.choose(Choice::Retry, now);
+        } else if physical_key == Some(Key::V) {
+            self.choose(Choice::Replay, now);
         }
     }
 
-    /// 결과 창을 닫고 다음 과정을 시작한다.
-    fn leave_result(&mut self, choice: Choice) {
-        self.history
-            .push(self.round.results().iter().copied().sum());
-        if choice == Choice::Next {
-            self.number += 1;
+    /// 결과 창에서 고른 대로 한다.
+    fn choose(&mut self, choice: Choice, now: f64) {
+        match choice {
+            // 되감아 보는 동안 결과는 그대로 두었다가, 끝나면 결과 창으로 돌아온다.
+            Choice::Replay => self.player = Some(Player::replay(&self.round, REPLAY_CAPTION, now)),
+            Choice::Next | Choice::Retry => {
+                self.history
+                    .push(self.round.results().iter().copied().sum());
+                if choice == Choice::Next {
+                    self.number += 1;
+                }
+                self.round = Round::new(texts::round(self.number));
+                self.finished_at = None;
+                self.passed_at = None;
+            }
         }
-        self.round = Round::new(texts::round(self.number));
-        self.finished_at = None;
-        self.passed_at = None;
+    }
+
+    /// 화면에 보여 줄 과정. 되감아 보이는 중이면 그쪽의 과정이다.
+    fn shown(&self) -> &Round {
+        self.player.as_ref().map_or(&self.round, Player::round)
+    }
+
+    /// 되감아 보이는 장치를 `now`까지 돌린다. 다 보였으면 치운다.
+    fn play(&mut self, now: f64) {
+        let Some(player) = &mut self.player else {
+            return;
+        };
+        self.follow |= player.advance(now);
+        if player.is_over(now) {
+            self.player = None;
+        }
     }
 
     /// 위쪽에 보여 주는 기록을 고쳐 적는다. 정해진 간격이 지났거나 문장을 막 끝냈을 때만 바꾼다.
     fn refresh_live(&mut self, now: f64) {
-        let lines = self.round.results().len();
-        let so_far = self.round.so_far(now);
+        // 되감아 보이는 과정에는 본디 시각이 남아 있으므로, 그 시각으로 기록을 낸다.
+        let clock = self.player.as_ref().map_or(now, Player::clock);
+        let lines = self.shown().results().len();
+        let so_far = self.shown().so_far(clock);
         let due = now - self.live_at >= LIVE_EVERY;
         if due || lines != self.live_lines || so_far.presses < self.live.presses {
             (self.live, self.live_at, self.live_lines) = (so_far, now, lines);
@@ -217,9 +266,9 @@ impl PracticeApp {
 
     /// 과정 번호, 문장 번호, 진행 막대, 그리고 지금까지의 속도와 정확도.
     fn progress_ui(&self, ui: &mut egui::Ui, palette: &Palette) {
-        let lines = self.round.lines().len();
-        let line = (self.round.results().len() + 1).min(lines);
-        let fraction = self.round.progress();
+        let lines = self.shown().lines().len();
+        let line = (self.shown().results().len() + 1).min(lines);
+        let fraction = self.shown().progress();
         ui.horizontal(|ui| {
             let percent = (fraction * 100.0).floor();
             let place = format!(
@@ -262,14 +311,15 @@ impl PracticeApp {
 
     /// 문장 하나를 담은 블럭.
     fn card_ui(&self, ui: &mut egui::Ui, look: &Look<'_>, index: usize, now: f64) {
-        let line = self.round.lines()[index];
-        let is_current = self.round.results().len() == index;
-        let stage = match self.round.results().get(index) {
+        let round = self.shown();
+        let line = round.lines()[index];
+        let is_current = round.results().len() == index;
+        let stage = match round.results().get(index) {
             Some(tally) => Stage::Done {
                 tally,
                 glow: self.glow(index, now),
             },
-            None if is_current => Stage::Current(self.round.typed()),
+            None if is_current => Stage::Current(round.typed()),
             None => Stage::Waiting,
         };
         let card = view::card(ui, look, &line, stage);
@@ -326,6 +376,11 @@ impl PracticeApp {
         }
         ui.add_space(6.0);
         self.progress_ui(ui, palette);
+        if let Some(player) = &self.player {
+            ui.add_space(6.0);
+            let caption = format!("{} · Esc를 누르면 그만둡니다", player.caption());
+            ui.label(RichText::new(caption).color(palette.caret));
+        }
         ui.add_space(10.0);
     }
 
@@ -337,7 +392,7 @@ impl PracticeApp {
             marker: self.settings.marker,
             echo: self.settings.echo,
         };
-        for index in 0..self.round.lines().len() {
+        for index in 0..self.shown().lines().len() {
             self.card_ui(ui, &look, index, now);
         }
         let help = "문장을 정확히 다 치면 다음 문장으로 넘어갑니다 · \
@@ -362,6 +417,7 @@ impl eframe::App for PracticeApp {
         let now = ui.input(|input| input.time);
         let events = ui.input(|input| input.events.clone());
         self.handle_events(&events, now);
+        self.play(now);
         self.refresh_live(now);
         let palette = Palette::of(ui.ctx().theme());
 
@@ -373,10 +429,15 @@ impl eframe::App for PracticeApp {
                 .show(ui, |ui| self.blocks_ui(ui, &palette, now));
         });
 
-        if self.finished_at.is_some() {
+        if let Some(player) = &self.player {
+            // 다음 글쇠를 눌러 보일 때에 맞춰 화면을 다시 그린다.
+            let wait = player.wait(now).max(0.01);
+            ui.ctx()
+                .request_repaint_after(Duration::from_secs_f64(wait));
+        } else if self.finished_at.is_some() {
             let choice = result::show(ui.ctx(), &palette, &self.summary(now));
             if let Some(choice) = choice {
-                self.leave_result(choice);
+                self.choose(choice, now);
             }
         } else if self.round.is_timing() {
             // 글쇠를 누르지 않는 동안에도, 다음에 숫자를 고쳐 적을 때가 되면 화면을 다시 그린다.
@@ -500,7 +561,7 @@ mod tests {
         // 새 과정이 시작되면 숫자도 처음으로 돌아간다.
         type_round(&mut app, done);
         app.refresh_live(done + 100.0);
-        app.leave_result(Choice::Next);
+        app.choose(Choice::Next, done + 100.0);
         app.refresh_live(done + 100.1);
         assert_eq!(app.live, Tally::default());
     }
@@ -568,6 +629,42 @@ mod tests {
         assert_eq!(app.round.lines(), first_round);
         assert!(app.round.results().is_empty());
         assert_eq!(app.history.len(), 1);
+    }
+
+    /// 결과 창에서 V를 누르면 방금 친 과정을 처음부터 되감아 보이고, 끝나면 결과 창으로 돌아온다.
+    #[test]
+    fn v_replays_the_round_and_returns_to_the_result() {
+        let mut app = PracticeApp::default();
+        let done = type_round(&mut app, 0.0);
+        let record = app.round.results().to_vec();
+        // 한글 상태에서 V 자리의 글쇠는 'ㅍ'이다.
+        let start = done + 1.0;
+        app.handle_events(&press('ㅍ', false), start);
+        assert!(app.player.is_some());
+        assert!(app.shown().results().is_empty(), "처음부터 다시 보인다");
+
+        // 되감아 보이는 동안 친 것은 받지 않는다.
+        app.handle_events(&press('ㄱ', true), start + 0.1);
+        app.handle_events(&named(Key::Enter), start + 0.2);
+        app.play(start + 1.0);
+        assert!(!app.shown().results().is_empty() || !app.shown().typed().text().is_empty());
+        assert_eq!((app.number, app.history.len()), (0, 0));
+
+        app.play(start + 1000.0);
+        assert!(app.player.is_none());
+        assert_eq!(app.finished_at, Some(done), "결과 창으로 돌아온다");
+        assert_eq!(app.round.results(), record);
+    }
+
+    #[test]
+    fn escape_stops_the_replay() {
+        let mut app = PracticeApp::default();
+        let done = type_round(&mut app, 0.0);
+        app.choose(Choice::Replay, done + 1.0);
+        assert!(app.player.is_some());
+        app.handle_events(&named(Key::Escape), done + 2.0);
+        assert!(app.player.is_none());
+        assert_eq!(app.finished_at, Some(done));
     }
 
     #[test]
