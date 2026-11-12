@@ -11,6 +11,7 @@ use keyboard_battle::measure::Tally;
 use keyboard_battle::player::Player;
 use keyboard_battle::round::Round;
 use keyboard_battle::texts;
+use keyboard_battle::tour;
 
 use crate::input::{InputStats, key_pos};
 use crate::result::{self, Choice, Summary, clock};
@@ -122,6 +123,7 @@ impl PracticeApp {
                         continue;
                     }
                     match key {
+                        Key::F1 => self.start_tour(now),
                         Key::Escape => self.round.clear_line(now),
                         Key::Backspace => self.round.backspace(now),
                         _ => {
@@ -188,6 +190,17 @@ impl PracticeApp {
                 self.passed_at = None;
             }
         }
+    }
+
+    /// 둘러보기를 시작한다. 문장을 치는 도중이면 그 문장의 시간이 흘러가 버리므로 시작하지 않는다.
+    fn start_tour(&mut self, now: f64) {
+        if self.can_tour() {
+            self.player = Some(tour::tour(now));
+        }
+    }
+
+    fn can_tour(&self) -> bool {
+        self.player.is_none() && self.finished_at.is_none() && !self.round.is_timing()
     }
 
     /// 화면에 보여 줄 과정. 되감아 보이는 중이면 그쪽의 과정이다.
@@ -358,16 +371,23 @@ impl PracticeApp {
     }
 
     /// 제목, 화면 밝기, 진행 상황. 창이 작아도 늘 보이는 곳에 둔다.
-    fn header_ui(&mut self, ui: &mut egui::Ui, palette: &Palette) {
+    fn header_ui(&mut self, ui: &mut egui::Ui, palette: &Palette, now: f64) {
+        let can_tour = self.can_tour();
+        let mut tour_asked = false;
         ui.horizontal(|ui| {
             let title = RichText::new("키보드 배틀").heading();
             ui.label(title.color(palette.plain));
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                 ui.toggle_value(&mut self.show_settings, "설정");
+                let tour = egui::Button::new("둘러보기 (F1)");
+                tour_asked = ui.add_enabled(can_tour, tour).clicked();
                 ui.separator();
                 theme::switcher(ui);
             });
         });
+        if tour_asked {
+            self.start_tour(now);
+        }
         if self.show_settings {
             egui::Frame::group(ui.style()).show(ui, |ui| {
                 ui.set_width(ui.available_width());
@@ -378,8 +398,10 @@ impl PracticeApp {
         self.progress_ui(ui, palette);
         if let Some(player) = &self.player {
             ui.add_space(6.0);
-            let caption = format!("{} · Esc를 누르면 그만둡니다", player.caption());
-            ui.label(RichText::new(caption).color(palette.caret));
+            ui.horizontal_wrapped(|ui| {
+                ui.label(RichText::new(player.caption()).color(palette.caret));
+                ui.label(RichText::new("· Esc를 누르면 그만둡니다").color(palette.dim));
+            });
         }
         ui.add_space(10.0);
     }
@@ -398,6 +420,11 @@ impl PracticeApp {
         let help = "문장을 정확히 다 치면 다음 문장으로 넘어갑니다 · \
                     Backspace 지우기 · Esc 줄 비우기 · 한/영 키는 누르지 않습니다";
         ui.label(RichText::new(help).color(palette.dim));
+        if self.stats.keys == 0 && self.player.is_none() {
+            // 아직 아무것도 치지 않은 사람에게만 권한다.
+            let invite = "처음이면 오른쪽 위의 둘러보기(F1)가 20초 동안 쓰는 법을 보여 줍니다";
+            ui.label(RichText::new(invite).color(palette.dim));
+        }
         ui.add_space(6.0);
         self.diagnostics_ui(ui, palette);
     }
@@ -422,7 +449,7 @@ impl eframe::App for PracticeApp {
         let palette = Palette::of(ui.ctx().theme());
 
         egui::CentralPanel::default().show(ui, |ui| {
-            self.header_ui(ui, &palette);
+            self.header_ui(ui, &palette, now);
             // 창이 작으면 블럭이 다 들어오지 않으므로 블럭 쪽만 내려 볼 수 있게 한다.
             egui::ScrollArea::vertical()
                 .auto_shrink([false, false])
@@ -654,6 +681,38 @@ mod tests {
         assert!(app.player.is_none());
         assert_eq!(app.finished_at, Some(done), "결과 창으로 돌아온다");
         assert_eq!(app.round.results(), record);
+    }
+
+    /// 둘러보기는 따로 노는 과정을 보여 주고, 끝나면 치던 과정으로 그대로 돌아온다.
+    #[test]
+    fn f1_runs_the_tour_without_touching_the_real_round() {
+        let mut app = PracticeApp::default();
+        app.handle_events(&named(Key::F1), 1.0);
+        assert!(app.player.is_some());
+        app.play(1.0 + 10.0);
+        assert!(
+            !app.shown().typed().text().is_empty(),
+            "둘러보기가 스스로 친다"
+        );
+        assert!(app.round.typed().text().is_empty() && app.round.log().is_empty());
+
+        app.play(1.0 + 1000.0);
+        assert!(app.player.is_none());
+        assert_eq!((app.finished_at, app.stats.keys), (None, 0));
+    }
+
+    #[test]
+    fn the_tour_does_not_start_in_the_middle_of_a_line() {
+        let mut app = PracticeApp::default();
+        app.handle_events(&press('ㄷ', true), 0.0);
+        app.handle_events(&named(Key::F1), 1.0);
+        assert!(app.player.is_none());
+
+        // 과정을 끝내 결과 창이 떠 있을 때도 시작하지 않는다.
+        let mut app = PracticeApp::default();
+        let done = type_round(&mut app, 0.0);
+        app.handle_events(&named(Key::F1), done + 5.0);
+        assert!(app.player.is_none());
     }
 
     #[test]

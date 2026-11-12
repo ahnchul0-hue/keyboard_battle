@@ -112,6 +112,15 @@ pub fn cells(target: &str, typed: &TypedText) -> Vec<Cell> {
     out
 }
 
+/// 조합 중인 글자가 이미 틀렸는지. 제대로 조합되어 가는 중이면 틀린 것이 아니다.
+pub fn composing_is_wrong(target: &str, typed: &TypedText) -> bool {
+    let at = typed.done().chars().count();
+    typed.composing().is_some()
+        && cells(target, typed)
+            .get(at)
+            .is_some_and(|cell| cell.state == State::Wrong)
+}
+
 #[cfg(test)]
 mod tests {
     use super::State::{Composing, Right, Todo, Wrong};
@@ -198,6 +207,24 @@ mod tests {
             hangul("가나다", "ㄱㅓㄴㅏㄷㅏ"),
             ("가나다".to_owned(), vec![Wrong, Right, Right])
         );
+    }
+
+    #[test]
+    fn a_composing_syllable_is_wrong_as_soon_as_it_leaves_the_sentence() {
+        let wrong = |keys: &str| {
+            let mut typed = TypedText::default();
+            for unit in keys.chars() {
+                let (pos, shift) = keystroke_for(unit).expect("글쇠 하나로 치는 문자");
+                typed.press(pos, shift, Script::Hangul);
+            }
+            composing_is_wrong("가나다", &typed)
+        };
+        assert!(!wrong(""));
+        assert!(!wrong("ㄱ") && !wrong("ㄱㅏ") && !wrong("ㄱㅏㄴ"));
+        assert!(wrong("ㅈ"), "첫 낱자부터 틀렸다");
+        assert!(wrong("ㄱㅏㄴㅓ"), "홀소리를 틀렸다");
+        // 앞에서 틀렸어도 지금 글자가 제대로 조합되는 중이면 틀렸다고 하지 않는다.
+        assert!(!wrong("ㄱㅓㄴㅏㄷ"));
     }
 
     #[test]

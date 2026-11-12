@@ -7,4 +7,5 @@ pub mod overlay;
 pub mod player;
 pub mod round;
 pub mod texts;
+pub mod tour;
 pub mod typed;

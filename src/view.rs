@@ -131,7 +131,13 @@ fn typed_job(typed: &TypedText, target: &str, look: &Look<'_>) -> LayoutJob {
         job.append(c.encode_utf8(&mut [0; 4]), 0.0, format);
     }
     if let Some(c) = typed.composing() {
-        let format = typing_format(size, palette.plain, Some(palette.plain));
+        // 조합 중이라도 이미 문장과 어긋났으면 바로 알린다.
+        let color = if overlay::composing_is_wrong(target, typed) {
+            palette.bad
+        } else {
+            palette.plain
+        };
+        let format = typing_format(size, color, Some(color));
         job.append(c.encode_utf8(&mut [0; 4]), 0.0, format);
     }
     // 커서가 설 자리로 빈칸을 하나 둔다.
