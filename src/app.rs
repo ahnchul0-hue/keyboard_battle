@@ -155,7 +155,7 @@ impl PracticeApp {
         }
     }
 
-    fn summary(&self) -> Summary<'_> {
+    fn summary(&self, now: f64) -> Summary<'_> {
         Summary {
             number: self.number + 1,
             lines: self.round.lines(),
@@ -163,6 +163,9 @@ impl PracticeApp {
             previous: self.history.last().copied(),
             best: self.history.iter().map(Tally::per_minute).reduce(f64::max),
             misses: self.round.misses(),
+            age: self
+                .finished_at
+                .map_or(0.0, |finished_at| now - finished_at),
         }
     }
 
@@ -331,7 +334,7 @@ impl eframe::App for PracticeApp {
         });
 
         if self.finished_at.is_some() {
-            let choice = result::show(ui.ctx(), &palette, &self.summary());
+            let choice = result::show(ui.ctx(), &palette, &self.summary(now));
             if let Some(choice) = choice {
                 self.leave_result(choice);
             }
@@ -473,7 +476,7 @@ mod tests {
         let first_round: Vec<&str> = app.round.lines().iter().map(|line| line.text).collect();
         let done = type_round(&mut app, 0.0);
         assert_eq!(app.finished_at, Some(done));
-        assert_eq!(app.summary().results.len(), 4);
+        assert_eq!(app.summary(0.0).results.len(), 4);
 
         app.handle_events(&named(Key::Enter), done + RESULT_GRACE);
         assert_eq!((app.number, app.finished_at), (1, None));
@@ -509,12 +512,12 @@ mod tests {
     #[test]
     fn the_result_compares_with_the_previous_round_and_the_best() {
         let mut app = PracticeApp::default();
-        assert!(app.summary().previous.is_none() && app.summary().best.is_none());
+        assert!(app.summary(0.0).previous.is_none() && app.summary(0.0).best.is_none());
         let done = type_round(&mut app, 0.0);
         app.handle_events(&named(Key::Enter), done + 1.0);
         type_round(&mut app, done + 2.0);
 
-        let summary = app.summary();
+        let summary = app.summary(0.0);
         let previous = summary.previous.expect("앞 과정의 기록");
         assert_eq!(summary.number, 2);
         assert_eq!(summary.best, Some(previous.per_minute()));

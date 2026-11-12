@@ -4,11 +4,18 @@
 //! 자주 틀린 글쇠를 두고, 다음 행동은 글쇠 하나로 고르게 한다.
 
 use eframe::egui::text::LayoutJob;
-use eframe::egui::{self, Align, FontId, Grid, Id, Layout, Modal, RichText, TextFormat};
+use eframe::egui::{
+    self, Align, Color32, FontId, Frame, Grid, Id, Layout, Modal, RichText, TextFormat,
+};
 use keyboard_battle::measure::Tally;
 use keyboard_battle::texts::{Kind, Sentence};
 
 use crate::theme::Palette;
+
+/// 결과 창이 떠오르는 데 걸리는 시간(초). 갑자기 덮지 않게 한다.
+const APPEAR: f64 = 0.2;
+/// 뒤 화면을 가리는 정도 (0 ~ 255). 방금 친 블럭이 비쳐 보이도록 옅게 둔다.
+const BACKDROP: f32 = 70.0;
 
 /// 결과 창에서 고른 다음 행동.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -32,6 +39,8 @@ pub struct Summary<'a> {
     pub best: Option<f64>,
     /// 틀렸을 때 눌러야 했던 글쇠들. 많이 틀린 것부터.
     pub misses: Vec<(char, u32)>,
+    /// 과정을 끝낸 뒤 흐른 시간(초).
+    pub age: f64,
 }
 
 /// 초를 `분:초`로 적는다.
@@ -141,7 +150,18 @@ fn misses_ui(ui: &mut egui::Ui, palette: &Palette, misses: &[(char, u32)]) {
 pub fn show(ctx: &egui::Context, palette: &Palette, summary: &Summary<'_>) -> Option<Choice> {
     let total: Tally = summary.results.iter().copied().sum();
     let previous = summary.previous;
-    let modal = Modal::new(Id::unique("result")).show(ctx, |ui| {
+    let shown = ((summary.age / APPEAR) as f32).clamp(0.0, 1.0);
+    if shown < 1.0 {
+        ctx.request_repaint();
+    }
+    let id = Id::unique("result");
+    let modal = Modal::new(id)
+        // 떠오르는 정도를 여기서 직접 정하므로 egui의 것은 끈다.
+        .area(Modal::default_area(id).fade_in(false))
+        .frame(Frame::popup(&ctx.global_style()).multiply_with_opacity(shown))
+        .backdrop_color(Color32::from_black_alpha((BACKDROP * shown) as u8));
+    let modal = modal.show(ctx, |ui| {
+        ui.set_opacity(shown);
         ui.set_width(540.0);
         ui.horizontal(|ui| {
             let title = format!("과정 {} 결과", summary.number);
