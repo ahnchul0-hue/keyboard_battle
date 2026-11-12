@@ -1,137 +1,92 @@
-//! 0단계 입력 확인 화면.
+//! 연습 화면.
 //!
-//! OS 입력기 상태와 무관하게, 글쇠 위치만으로 한글·영문·코드가 쳐지는지 실제 PC에서 확인한다.
+//! 과정 하나는 문장 네 개다. 문장을 블럭으로 늘어놓고 지금 칠 문장 아래에 친 글을 보여 준다.
+//! 과정이 끝나면 결과 창을 띄우고, 거기서 새 문장으로 넘어간다.
 //! 이 화면은 글상자를 쓰지 않으므로 OS 입력기는 켜지지 않는다.
 
-use std::collections::VecDeque;
+use std::ops::Range;
+use std::time::Duration;
 
 use eframe::egui::text::{CCursor, LayoutJob};
-use eframe::egui::{self, Align, Event, FontId, Key, Layout, RichText, Stroke, TextFormat};
-use keyboard_battle::keymap::KeyPos;
-use keyboard_battle::typed::{Script, TypedText};
+use eframe::egui::{
+    self, Align, Color32, Event, FontId, Key, Layout, RichText, Sense, Stroke, StrokeKind,
+    TextFormat,
+};
+use keyboard_battle::measure::Tally;
+use keyboard_battle::round::Round;
+use keyboard_battle::texts;
+use keyboard_battle::typed::TypedText;
 
+use crate::input::{InputStats, key_pos};
+use crate::result::{self, Choice, Summary, clock};
 use crate::theme::{self, Palette};
 
 const TYPING_FONT_SIZE: f32 = 24.0;
-const RECENT_EVENTS: usize = 16;
+/// 결과 창이 뜬 뒤 이만큼(초)은 글쇠로 창을 넘기지 못한다.
+/// 문장 끝에 버릇처럼 누른 Enter 때문에 결과를 못 보고 지나치는 일을 막는다.
+const RESULT_GRACE: f64 = 0.8;
+/// 속도는 이만큼(초) 친 뒤부터 보여 준다. 처음 한두 글쇠로 낸 속도는 터무니없이 크다.
+const LIVE_SPEED_AFTER: f64 = 2.0;
 
-struct Line {
-    name: &'static str,
-    script: Script,
-    target: &'static str,
-}
-
-const LINES: [Line; 4] = [
-    Line {
-        name: "한글",
-        script: Script::Hangul,
-        target: "다람쥐 헌 쳇바퀴에 타고파",
-    },
-    Line {
-        name: "한글 겹낱자",
-        script: Script::Hangul,
-        target: "얘, 옛 학생은 값싼 떡볶이와 닭꼬치, 짭짤한 빵을 좋아했다.",
-    },
-    Line {
-        name: "영문",
-        script: Script::Latin,
-        target: "The quick brown fox jumps over the lazy dog.",
-    },
-    Line {
-        name: "러스트 코드",
-        script: Script::Latin,
-        target: "let v: Vec<u8> = vec![1, 2]; println!(\"{:?}\", &v);",
-    },
-];
-
-/// egui가 알려 준 글쇠를 자판 위의 자리로 바꾼다. 문자 글쇠가 아니면 `None`.
-fn key_pos(key: Key) -> Option<KeyPos> {
-    let legend = match key {
-        Key::Backtick => '`',
-        Key::Minus => '-',
-        Key::Equals => '=',
-        Key::OpenBracket => '[',
-        Key::CloseBracket => ']',
-        Key::Backslash => '\\',
-        Key::Semicolon => ';',
-        Key::Quote => '\'',
-        Key::Comma => ',',
-        Key::Period => '.',
-        Key::Slash => '/',
-        Key::Space => ' ',
-        // 글자·숫자 글쇠는 이름이 곧 쿼티 자판에 새겨진 글자다 ("A", "7").
-        _ => match *key.name().as_bytes() {
-            [legend] => char::from(legend).to_ascii_lowercase(),
-            _ => return None,
-        },
-    };
-    KeyPos::from_us(legend)
-}
-
-/// OS가 글쇠 입력을 어떻게 넘겨줬는지에 대한 기록. 다른 PC에서 생긴 문제를 좁히는 데 쓴다.
-#[derive(Default)]
-struct InputStats {
-    /// 눌린 문자 글쇠 수.
-    keys: u32,
-    /// 그중 OS가 문자를 함께 보내지 않은 글쇠 수. OS 입력기가 글쇠를 먼저 받았다는 뜻이다.
-    taken_by_ime: u32,
-    /// 자판 위의 자리를 알 수 없던 글쇠 수.
-    without_position: u32,
-    /// OS 입력기가 보낸 조합 이벤트 수.
-    ime_events: u32,
-    recent: VecDeque<String>,
-}
-
-impl InputStats {
-    fn log(&mut self, entry: String) {
-        if self.recent.len() == RECENT_EVENTS {
-            self.recent.pop_front();
-        }
-        self.recent.push_back(entry);
-    }
-
-    fn verdict(&self) -> String {
-        let (keys, taken_by_ime, unknown) = (self.keys, self.taken_by_ime, self.without_position);
-        if unknown > 0 {
-            format!(
-                "자리를 알 수 없는 글쇠가 {unknown}개 있었습니다. 확인 결과를 복사해 알려 주세요."
-            )
-        } else if keys == 0 {
-            "아직 입력이 없습니다.".to_owned()
-        } else if taken_by_ime > 0 || self.ime_events > 0 {
-            format!(
-                "글쇠 {keys}개 중 {taken_by_ime}개는 OS 입력기가 먼저 받았지만, 글쇠 자리로 읽어 그대로 처리했습니다."
-            )
-        } else {
-            format!("글쇠 {keys}개 모두 OS 입력기를 거치지 않고 들어왔습니다.")
-        }
-    }
-}
-
-/// 친 글을 목표 문장과 견주어 색을 입힌다. 조합 중인 글자에는 밑줄을 긋는다.
-fn typed_job(typed: &TypedText, target: &str, palette: &Palette) -> LayoutJob {
-    let format = |color, underline| TextFormat {
+/// 타자 영역의 글자 모양. `underline`이 있으면 그 색으로 밑줄을 긋는다.
+fn typing_format(color: Color32, underline: Option<Color32>) -> TextFormat {
+    TextFormat {
         font_id: FontId::monospace(TYPING_FONT_SIZE),
         color,
-        underline: Stroke::new(underline, color),
+        underline: underline.map_or(Stroke::NONE, |color| Stroke::new(2.0, color)),
         ..Default::default()
+    }
+}
+
+/// 지금 칠 낱말의 범위(글자 번호). `typed`는 지금까지 친 글자 수다.
+fn current_word(text: &str, typed: usize) -> Range<usize> {
+    let chars: Vec<char> = text.chars().collect();
+    let mut start = typed.min(chars.len());
+    // 낱말 사이의 빈칸을 칠 차례면 그다음 낱말을 가리킨다.
+    while chars.get(start) == Some(&' ') {
+        start += 1;
+    }
+    // 낱말 한가운데면 그 낱말의 처음으로 돌아간다.
+    while start > 0 && chars[start - 1] != ' ' {
+        start -= 1;
+    }
+    let length = chars[start..].iter().take_while(|&&c| c != ' ').count();
+    start..start + length
+}
+
+/// 칠 문장. `word`(글자 번호 범위)에는 밑줄을 그어, 눈이 따라갈 자리를 알려 준다.
+fn target_job(text: &str, word: Range<usize>, color: Color32, mark: Color32) -> LayoutJob {
+    let byte = |index: usize| {
+        let found = text.char_indices().nth(index);
+        found.map_or(text.len(), |(at, _)| at)
     };
+    let (start, end) = (byte(word.start), byte(word.end));
+    let mut job = LayoutJob::default();
+    job.append(&text[..start], 0.0, typing_format(color, None));
+    job.append(&text[start..end], 0.0, typing_format(color, Some(mark)));
+    job.append(&text[end..], 0.0, typing_format(color, None));
+    job
+}
+
+/// 친 글을 칠 문장과 견주어 색을 입힌다. 조합 중인 글자에는 밑줄을 긋는다.
+fn typed_job(typed: &TypedText, target: &str, palette: &Palette) -> LayoutJob {
     let mut job = LayoutJob::default();
     let mut expected = target.chars();
     for c in typed.done().chars() {
         // 틀린 사이띄개도 보이도록 틀린 글자에는 밑줄을 긋는다.
-        let section = if expected.next() == Some(c) {
-            format(palette.good, 0.0)
+        let format = if expected.next() == Some(c) {
+            typing_format(palette.good, None)
         } else {
-            format(palette.bad, 2.0)
+            typing_format(palette.bad, Some(palette.bad))
         };
-        job.append(c.encode_utf8(&mut [0; 4]), 0.0, section);
+        job.append(c.encode_utf8(&mut [0; 4]), 0.0, format);
     }
     if let Some(c) = typed.composing() {
-        job.append(c.encode_utf8(&mut [0; 4]), 0.0, format(palette.plain, 2.0));
+        let format = typing_format(palette.plain, Some(palette.plain));
+        job.append(c.encode_utf8(&mut [0; 4]), 0.0, format);
     }
     // 아무것도 치지 않았을 때도 줄 높이가 유지되고 커서가 설 자리가 있도록 빈칸을 하나 둔다.
-    job.append(" ", 0.0, format(palette.plain, 0.0));
+    job.append(" ", 0.0, typing_format(palette.plain, None));
     job
 }
 
@@ -140,7 +95,7 @@ fn typed_ui(ui: &mut egui::Ui, typed: &TypedText, target: &str, palette: &Palett
     let mut job = typed_job(typed, target, palette);
     job.wrap.max_width = ui.available_width();
     let galley = ui.painter().layout_job(job);
-    let (rect, _) = ui.allocate_exact_size(galley.size(), egui::Sense::hover());
+    let (rect, _) = ui.allocate_exact_size(galley.size(), Sense::hover());
     if typed.composing().is_none() {
         let end = galley.pos_from_cursor(CCursor::new(typed.done().chars().count()));
         let top = rect.min + end.min.to_vec2();
@@ -150,21 +105,56 @@ fn typed_ui(ui: &mut egui::Ui, typed: &TypedText, target: &str, palette: &Palett
     ui.painter().galley(rect.min, galley, palette.plain);
 }
 
-#[derive(Default)]
-pub struct CheckApp {
-    /// 지금 칠 문장의 번호. `LINES.len()`이면 모두 통과한 상태다.
-    line: usize,
-    typed: TypedText,
-    /// 네 문장을 끝까지 통과한 횟수.
-    rounds: u32,
+/// 과정 전체에서 얼마나 쳤는지 보여 주는 막대.
+fn progress_bar(ui: &mut egui::Ui, fraction: f32, palette: &Palette) {
+    let size = egui::vec2(ui.available_width(), 10.0);
+    let (track, _) = ui.allocate_exact_size(size, Sense::hover());
+    let radius = track.height() / 2.0;
+    let mut filled = track;
+    filled.set_width(track.width() * fraction.clamp(0.0, 1.0));
+    let painter = ui.painter();
+    painter.rect_filled(track, radius, palette.card);
+    painter.rect_filled(filled, radius, palette.caret);
+    let outline = Stroke::new(1.0, palette.border);
+    painter.rect_stroke(track, radius, outline, StrokeKind::Inside);
+}
+
+pub struct PracticeApp {
+    /// 지금 과정의 번호 (0부터).
+    number: usize,
+    round: Round,
+    /// 과정을 끝낸 시각(초). 값이 있는 동안 결과 창이 떠 있다.
+    finished_at: Option<f64>,
+    /// 이번 실행에서 끝낸 과정들의 기록.
+    history: Vec<Tally>,
     stats: InputStats,
     show_recent: bool,
+    /// 이번 화면 갱신에 글쇠가 눌렸는지. 눌렸으면 지금 칠 블럭이 보이는 곳으로 화면을 옮긴다.
+    follow: bool,
     /// 화면을 그리는 데 쓰인 그래픽 장치. 확인 결과에 적는다.
     renderer: String,
 }
 
-impl CheckApp {
-    fn handle_events(&mut self, events: &[Event]) {
+impl Default for PracticeApp {
+    fn default() -> Self {
+        Self {
+            number: 0,
+            round: Round::new(texts::round(0)),
+            finished_at: None,
+            history: Vec::new(),
+            stats: InputStats::default(),
+            show_recent: false,
+            follow: false,
+            renderer: String::new(),
+        }
+    }
+}
+
+impl PracticeApp {
+    /// 이번 화면 갱신에 들어온 입력을 처리한다. `now`는 지금 시각(초)이다.
+    fn handle_events(&mut self, events: &[Event], now: f64) {
+        let pressed = |event: &Event| matches!(event, Event::Key { pressed: true, .. });
+        self.follow = events.iter().any(pressed);
         for (index, event) in events.iter().enumerate() {
             match event {
                 Event::Key {
@@ -180,15 +170,23 @@ impl CheckApp {
                     if modifiers.ctrl || modifiers.alt || modifiers.command {
                         continue;
                     }
+                    if let Some(finished_at) = self.finished_at {
+                        if now - finished_at >= RESULT_GRACE {
+                            self.result_key(*key, *physical_key);
+                        }
+                        continue;
+                    }
                     match key {
-                        Key::Escape => self.typed.clear(),
-                        Key::Backspace => self.typed.backspace(),
-                        Key::Enter if self.line == LINES.len() => self.line = 0,
+                        Key::Escape => self.round.clear_line(),
+                        Key::Backspace => self.round.backspace(),
                         _ => {
                             let os_sent_text =
                                 matches!(events.get(index + 1), Some(Event::Text(_)));
-                            self.press(*physical_key, shift, os_sent_text);
+                            self.press(*physical_key, shift, os_sent_text, now);
                         }
+                    }
+                    if self.round.is_finished() {
+                        self.finished_at = Some(now);
                     }
                 }
                 Event::Text(text) => self.stats.log(format!("Text {text:?}")),
@@ -199,22 +197,9 @@ impl CheckApp {
                 _ => {}
             }
         }
-        if LINES
-            .get(self.line)
-            .is_some_and(|line| self.typed.text() == line.target)
-        {
-            self.typed.clear();
-            self.line += 1;
-            if self.line == LINES.len() {
-                self.rounds += 1;
-            }
-        }
     }
 
-    fn press(&mut self, physical_key: Option<Key>, shift: bool, os_sent_text: bool) {
-        let Some(line) = LINES.get(self.line) else {
-            return;
-        };
+    fn press(&mut self, physical_key: Option<Key>, shift: bool, os_sent_text: bool, now: f64) {
         let Some(key) = physical_key else {
             self.stats.without_position += 1;
             return;
@@ -222,7 +207,38 @@ impl CheckApp {
         if let Some(pos) = key_pos(key) {
             self.stats.keys += 1;
             self.stats.taken_by_ime += u32::from(!os_sent_text);
-            self.typed.press(pos, shift, line.script);
+            self.round.press(pos, shift, now);
+        }
+    }
+
+    /// 결과 창이 떠 있을 때의 글쇠. R은 OS 입력기 상태와 무관하도록 글쇠 자리로 읽는다.
+    fn result_key(&mut self, key: Key, physical_key: Option<Key>) {
+        if key == Key::Enter {
+            self.leave_result(Choice::Next);
+        } else if physical_key == Some(Key::R) {
+            self.leave_result(Choice::Retry);
+        }
+    }
+
+    /// 결과 창을 닫고 다음 과정을 시작한다.
+    fn leave_result(&mut self, choice: Choice) {
+        self.history
+            .push(self.round.results().iter().copied().sum());
+        if choice == Choice::Next {
+            self.number += 1;
+        }
+        self.round = Round::new(texts::round(self.number));
+        self.finished_at = None;
+    }
+
+    fn summary(&self) -> Summary<'_> {
+        Summary {
+            number: self.number + 1,
+            lines: self.round.lines(),
+            results: self.round.results(),
+            previous: self.history.last().copied(),
+            best: self.history.iter().map(Tally::per_minute).reduce(f64::max),
+            misses: self.round.misses(),
         }
     }
 
@@ -236,17 +252,18 @@ impl CheckApp {
             recent,
         } = &self.stats;
         let mut report = format!(
-            "keyboard_battle {} ({} {})\n그래픽: {}\n통과한 문장 {}/{}, 완주 {}회\n\
+            "keyboard_battle {} ({} {})\n그래픽: {}\n과정 {}, 문장 {}/{}, 끝낸 과정 {}개\n\
              문자 글쇠 {keys} / 입력기가 먼저 받음 {taken_by_ime} / 자리 모름 {without_position} / \
              입력기 조합 이벤트 {ime_events}\n지금 친 글: {:?}\n최근 입력:\n",
             env!("CARGO_PKG_VERSION"),
             std::env::consts::OS,
             std::env::consts::ARCH,
             self.renderer,
-            self.line,
-            LINES.len(),
-            self.rounds,
-            self.typed.text(),
+            self.number + 1,
+            self.round.results().len(),
+            self.round.lines().len(),
+            self.history.len(),
+            self.round.typed().text(),
         );
         for entry in recent {
             report.push_str("  ");
@@ -256,79 +273,147 @@ impl CheckApp {
         report
     }
 
-    fn lines_ui(&self, ui: &mut egui::Ui, palette: &Palette) {
-        for (index, line) in LINES.iter().enumerate() {
-            let (status, color) = match index.cmp(&self.line) {
-                std::cmp::Ordering::Less => ("통과", palette.good),
-                std::cmp::Ordering::Equal => ("지금", palette.plain),
-                std::cmp::Ordering::Greater => ("대기", palette.dim),
-            };
-            ui.label(RichText::new(format!("{status} · {}", line.name)).color(color));
-            let target_color = if index == self.line {
-                palette.plain
-            } else {
-                palette.dim
-            };
-            let target = RichText::new(line.target)
-                .monospace()
-                .size(TYPING_FONT_SIZE);
-            ui.label(target.color(target_color));
-            if index == self.line {
-                typed_ui(ui, &self.typed, line.target, palette);
-            }
-            ui.add_space(12.0);
-        }
+    /// 과정 번호, 문장 번호, 진행 막대, 그리고 지금까지의 속도와 정확도.
+    fn progress_ui(&self, ui: &mut egui::Ui, palette: &Palette, now: f64) {
+        let lines = self.round.lines().len();
+        let line = (self.round.results().len() + 1).min(lines);
+        let fraction = self.round.progress();
+        ui.horizontal(|ui| {
+            let percent = (fraction * 100.0).floor();
+            let place = format!(
+                "과정 {} · 문장 {line}/{lines} · {percent:.0}%",
+                self.number + 1
+            );
+            ui.label(RichText::new(place).color(palette.plain));
+            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                let so_far = self.round.so_far(now);
+                let live = if so_far.presses == 0 {
+                    "첫 글쇠를 누르면 시간을 잽니다".to_owned()
+                } else {
+                    let speed = if so_far.seconds >= LIVE_SPEED_AFTER {
+                        format!("{:.0}", so_far.per_minute())
+                    } else {
+                        "–".to_owned()
+                    };
+                    format!(
+                        "{speed} 타/분 · 정확도 {:.0}% · {}",
+                        (so_far.accuracy() * 100.0).floor(),
+                        clock(so_far.seconds)
+                    )
+                };
+                ui.label(RichText::new(live).color(palette.dim));
+            });
+        });
+        ui.add_space(4.0);
+        progress_bar(ui, fraction, palette);
     }
 
-    fn body_ui(&mut self, ui: &mut egui::Ui, palette: &Palette) {
+    /// 문장 하나를 담은 블럭.
+    fn card_ui(&self, ui: &mut egui::Ui, palette: &Palette, index: usize) {
+        let line = self.round.lines()[index];
+        let result = self.round.results().get(index);
+        let is_current = self.round.results().len() == index;
+        let (status, status_color) = match result {
+            Some(_) => ("통과", palette.good),
+            None if is_current => ("지금", palette.plain),
+            None => ("대기", palette.dim),
+        };
+        let card = egui::Frame::new()
+            .fill(palette.card)
+            .corner_radius(8.0)
+            .inner_margin(12.0);
+        // 지금 칠 블럭은 테두리를 굵게 한다. 나머지는 그만큼 바깥을 띄워 블럭 크기가 달라지지 않게 한다.
+        let card = if is_current {
+            card.stroke(Stroke::new(2.0, palette.caret))
+        } else {
+            card.stroke(Stroke::new(1.0, palette.border))
+                .outer_margin(1.0)
+        };
+        let shown = card.show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            ui.horizontal(|ui| {
+                let label = format!("{status} · {}", line.kind.name());
+                ui.label(RichText::new(label).color(status_color));
+                if let Some(tally) = result {
+                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                        let record = format!(
+                            "{:.0} 타/분 · 정확도 {:.0}%",
+                            tally.per_minute(),
+                            (tally.accuracy() * 100.0).floor()
+                        );
+                        ui.label(RichText::new(record).color(palette.dim));
+                    });
+                }
+            });
+            if is_current {
+                let typed = self.round.typed();
+                let word = current_word(line.text, typed.done().chars().count());
+                ui.label(target_job(line.text, word, palette.plain, palette.caret));
+                typed_ui(ui, typed, line.text, palette);
+            } else {
+                ui.label(target_job(line.text, 0..0, palette.dim, palette.dim));
+            }
+        });
+        if is_current && self.follow {
+            shown.response.scroll_to_me(Some(Align::Center));
+        }
+        ui.add_space(6.0);
+    }
+
+    /// OS가 입력을 어떻게 넘겼는지 보는 곳. 다른 PC에서 생긴 문제를 알릴 때 쓴다.
+    fn diagnostics_ui(&mut self, ui: &mut egui::Ui, palette: &Palette) {
+        egui::CollapsingHeader::new("입력 진단").show(ui, |ui| {
+            ui.label(
+                "OS 입력기를 영문 상태와 한글 상태로 각각 두고 한 과정씩 쳐 본 뒤, \
+                 결과를 복사해 알려 주세요.",
+            );
+            ui.label(self.stats.verdict());
+            ui.horizontal(|ui| {
+                if ui.button("확인 결과 복사").clicked() {
+                    ui.ctx().copy_text(self.report());
+                }
+                ui.checkbox(&mut self.show_recent, "최근 입력 보기");
+            });
+            if self.show_recent {
+                egui::ScrollArea::vertical()
+                    .max_height(160.0)
+                    .auto_shrink([false, true])
+                    .stick_to_bottom(true)
+                    .show(ui, |ui| {
+                        for entry in &self.stats.recent {
+                            ui.label(RichText::new(entry).monospace().color(palette.dim));
+                        }
+                    });
+            }
+        });
+    }
+
+    /// 제목, 화면 밝기, 진행 상황. 창이 작아도 늘 보이는 곳에 둔다.
+    fn header_ui(&self, ui: &mut egui::Ui, palette: &Palette, now: f64) {
         ui.horizontal(|ui| {
-            let title = RichText::new("키보드 배틀 · 0단계 입력 확인").heading();
+            let title = RichText::new("키보드 배틀").heading();
             ui.label(title.color(palette.plain));
             ui.with_layout(Layout::right_to_left(Align::Center), theme::switcher);
         });
-        ui.add_space(4.0);
-        ui.label(
-            "한/영 키를 누르지 말고 아래 문장을 그대로 치세요. \
-             OS 입력기가 한글 상태든 영문 상태든 똑같이 쳐져야 합니다.",
-        );
-        ui.label(RichText::new("Backspace 지우기 · Esc 줄 비우기").color(palette.dim));
-        ui.add_space(16.0);
+        ui.add_space(6.0);
+        self.progress_ui(ui, palette, now);
+        ui.add_space(10.0);
+    }
 
-        self.lines_ui(ui, palette);
-
-        if self.line == LINES.len() {
-            let done = format!("네 문장을 모두 통과했습니다 ({}회째).", self.rounds);
-            ui.label(RichText::new(done).color(palette.good));
-            ui.label(
-                "OS 입력기를 반대 상태(한글 ↔ 영문)로 바꾼 뒤 \
-                 Enter를 눌러 한 번 더 확인해 주세요.",
-            );
-            ui.add_space(12.0);
+    /// 문장 블럭들과 그 아래의 도움말.
+    fn blocks_ui(&mut self, ui: &mut egui::Ui, palette: &Palette) {
+        for index in 0..self.round.lines().len() {
+            self.card_ui(ui, palette, index);
         }
-
-        ui.separator();
-        ui.label(self.stats.verdict());
-        ui.horizontal(|ui| {
-            if ui.button("확인 결과 복사").clicked() {
-                ui.ctx().copy_text(self.report());
-            }
-            ui.checkbox(&mut self.show_recent, "최근 입력 보기");
-        });
-        if self.show_recent {
-            // 목록만 따로 내려 보게 해서, 목록이 길어도 치는 줄이 화면 밖으로 밀려나지 않게 한다.
-            egui::ScrollArea::vertical()
-                .auto_shrink([false, false])
-                .stick_to_bottom(true)
-                .show(ui, |ui| {
-                    for entry in &self.stats.recent {
-                        ui.label(RichText::new(entry).monospace().color(palette.dim));
-                    }
-                });
-        }
+        let help = "문장을 정확히 다 치면 다음 문장으로 넘어갑니다 · \
+                    Backspace 지우기 · Esc 줄 비우기 · 한/영 키는 누르지 않습니다";
+        ui.label(RichText::new(help).color(palette.dim));
+        ui.add_space(6.0);
+        self.diagnostics_ui(ui, palette);
     }
 }
 
-impl eframe::App for CheckApp {
+impl eframe::App for PracticeApp {
     fn ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
         if self.renderer.is_empty() {
             self.renderer = frame.wgpu_render_state().map_or_else(
@@ -339,11 +424,28 @@ impl eframe::App for CheckApp {
                 },
             );
         }
+        let now = ui.input(|input| input.time);
         let events = ui.input(|input| input.events.clone());
-        self.handle_events(&events);
+        self.handle_events(&events, now);
         let palette = Palette::of(ui.ctx().theme());
 
-        egui::CentralPanel::default().show(ui, |ui| self.body_ui(ui, &palette));
+        egui::CentralPanel::default().show(ui, |ui| {
+            self.header_ui(ui, &palette, now);
+            // 창이 작으면 블럭이 다 들어오지 않으므로 블럭 쪽만 내려 볼 수 있게 한다.
+            egui::ScrollArea::vertical()
+                .auto_shrink([false, false])
+                .show(ui, |ui| self.blocks_ui(ui, &palette));
+        });
+
+        if self.finished_at.is_some() {
+            let choice = result::show(ui.ctx(), &palette, &self.summary());
+            if let Some(choice) = choice {
+                self.leave_result(choice);
+            }
+        } else if self.round.is_timing() {
+            // 글쇠를 누르지 않는 동안에도 시간과 속도가 흐르게 한다.
+            ui.ctx().request_repaint_after(Duration::from_millis(200));
+        }
 
         // 버튼이 초점을 쥐면 사이띄개와 Enter가 그 버튼을 눌러 버리므로, 초점을 늘 비워 둔다.
         ui.memory_mut(|memory| {
@@ -357,26 +459,17 @@ impl eframe::App for CheckApp {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use keyboard_battle::keymap::qwerty;
+    use keyboard_battle::keymap::keystroke_for;
+    use keyboard_battle::measure::key_units;
 
-    #[test]
-    fn every_character_key_has_exactly_one_egui_key() {
-        let mut legends: Vec<char> = Key::ALL
+    /// `unit`(낱자나 문자)을 치는 글쇠 입력. `with_text`가 거짓이면 OS 입력기가 먼저 받은 것처럼
+    /// 문자(Text) 없이 글쇠 자리만 보낸다.
+    fn press(unit: char, with_text: bool) -> Vec<Event> {
+        let (pos, shift) = keystroke_for(unit).expect("글쇠 하나로 치는 문자");
+        let key = *Key::ALL
             .iter()
-            .filter_map(|&key| key_pos(key))
-            .map(|pos| qwerty(pos, false))
-            .collect();
-        legends.sort_unstable();
-        let mut expected: Vec<char> = KeyPos::all().map(|pos| qwerty(pos, false)).collect();
-        expected.sort_unstable();
-        assert_eq!(legends, expected);
-        assert_eq!(key_pos(Key::R), KeyPos::from_us('r'));
-        assert_eq!(key_pos(Key::Num7), KeyPos::from_us('7'));
-        assert_eq!(key_pos(Key::F1), None);
-        assert_eq!(key_pos(Key::Enter), None);
-    }
-
-    fn press(key: Key, shift: bool) -> Vec<Event> {
+            .find(|&&key| key_pos(key) == Some(pos))
+            .expect("문자 글쇠");
         let modifiers = egui::Modifiers {
             shift,
             ..Default::default()
@@ -388,33 +481,137 @@ mod tests {
             repeat: false,
             modifiers,
         };
-        vec![key, Event::Text(String::new())]
+        let text = with_text.then(|| Event::Text(unit.to_string()));
+        std::iter::once(key).chain(text).collect()
+    }
+
+    fn named(key: Key) -> Vec<Event> {
+        vec![Event::Key {
+            key,
+            physical_key: Some(key),
+            pressed: true,
+            repeat: false,
+            modifiers: egui::Modifiers::default(),
+        }]
+    }
+
+    /// 지금 문장을 `start`초부터 0.1초에 한 글쇠씩 끝까지 친다. 다 친 시각을 돌려준다.
+    fn type_line(app: &mut PracticeApp, start: f64) -> f64 {
+        let text = app.round.current().expect("칠 문장이 남아 있다").text;
+        let mut now = start;
+        for unit in key_units(text) {
+            now += 0.1;
+            app.handle_events(&press(unit, true), now);
+        }
+        now
+    }
+
+    /// 과정 하나를 끝까지 친다. 다 친 시각을 돌려준다.
+    fn type_round(app: &mut PracticeApp, start: f64) -> f64 {
+        let mut now = start;
+        while !app.round.is_finished() {
+            now = type_line(app, now);
+        }
+        now
     }
 
     #[test]
     fn typing_a_line_moves_on_to_the_next() {
-        let mut app = CheckApp::default();
-        // "다람쥐 헌 쳇바퀴에 타고파"를 두벌식으로 치는 손놀림.
-        for legend in "ekfkawnl gjs cptqkznldp xkrhvk".chars() {
-            let key = *Key::ALL
-                .iter()
-                .find(|&&key| key_pos(key) == KeyPos::from_us(legend))
-                .expect("문자 글쇠");
-            app.handle_events(&press(key, false));
-        }
-        assert_eq!(app.line, 1);
-        assert_eq!(app.typed.text(), "");
-        assert_eq!((app.stats.keys, app.stats.taken_by_ime), (30, 0));
+        let mut app = PracticeApp::default();
+        let first = app.round.lines()[0].text;
+        type_line(&mut app, 0.0);
+        assert_eq!(app.round.results().len(), 1);
+        assert_eq!(app.round.typed().text(), "");
+        let keys = key_units(first).len() as u32;
+        assert_eq!((app.stats.keys, app.stats.taken_by_ime), (keys, 0));
+        assert_eq!(app.finished_at, None);
     }
 
     #[test]
     fn keys_the_ime_took_first_are_still_typed() {
-        let mut app = CheckApp::default();
-        // OS 입력기가 먼저 받은 글쇠는 문자(Text) 없이 글쇠 자리만 온다.
-        let without_text = |key| vec![press(key, false).swap_remove(0)];
-        app.handle_events(&without_text(Key::E));
-        app.handle_events(&without_text(Key::K));
-        assert_eq!(app.typed.text(), "다");
+        let mut app = PracticeApp::default();
+        // 첫 문장은 '다'로 시작한다.
+        app.handle_events(&press('ㄷ', false), 0.0);
+        app.handle_events(&press('ㅏ', false), 0.1);
+        assert_eq!(app.round.typed().text(), "다");
         assert_eq!((app.stats.keys, app.stats.taken_by_ime), (2, 2));
+    }
+
+    #[test]
+    fn finishing_a_round_opens_the_result_and_enter_brings_new_sentences() {
+        let mut app = PracticeApp::default();
+        let first_round: Vec<&str> = app.round.lines().iter().map(|line| line.text).collect();
+        let done = type_round(&mut app, 0.0);
+        assert_eq!(app.finished_at, Some(done));
+        assert_eq!(app.summary().results.len(), 4);
+
+        app.handle_events(&named(Key::Enter), done + RESULT_GRACE);
+        assert_eq!((app.number, app.finished_at), (1, None));
+        assert_eq!(app.history.len(), 1);
+        let second_round: Vec<&str> = app.round.lines().iter().map(|line| line.text).collect();
+        assert!(second_round.iter().all(|text| !first_round.contains(text)));
+    }
+
+    /// 문장 끝에 버릇처럼 누른 Enter로 결과 창이 닫히면 안 된다.
+    #[test]
+    fn enter_right_after_finishing_does_not_skip_the_result() {
+        let mut app = PracticeApp::default();
+        let done = type_round(&mut app, 0.0);
+        app.handle_events(&named(Key::Enter), done + 0.1);
+        app.handle_events(&press('ㄱ', true), done + 0.2);
+        assert_eq!((app.number, app.finished_at), (0, Some(done)));
+        assert!(app.history.is_empty());
+    }
+
+    #[test]
+    fn r_repeats_the_same_sentences_and_keeps_the_record() {
+        let mut app = PracticeApp::default();
+        let first_round = app.round.lines().to_vec();
+        let done = type_round(&mut app, 0.0);
+        // 한글 상태에서 R 자리의 글쇠는 'ㄱ'이지만, 자리로 읽으므로 똑같이 통한다.
+        app.handle_events(&press('ㄱ', false), done + 1.0);
+        assert_eq!((app.number, app.finished_at), (0, None));
+        assert_eq!(app.round.lines(), first_round);
+        assert!(app.round.results().is_empty());
+        assert_eq!(app.history.len(), 1);
+    }
+
+    #[test]
+    fn the_result_compares_with_the_previous_round_and_the_best() {
+        let mut app = PracticeApp::default();
+        assert!(app.summary().previous.is_none() && app.summary().best.is_none());
+        let done = type_round(&mut app, 0.0);
+        app.handle_events(&named(Key::Enter), done + 1.0);
+        type_round(&mut app, done + 2.0);
+
+        let summary = app.summary();
+        let previous = summary.previous.expect("앞 과정의 기록");
+        assert_eq!(summary.number, 2);
+        assert_eq!(summary.best, Some(previous.per_minute()));
+        // 0.1초에 한 글쇠씩 쳤다.
+        assert!((previous.per_minute() - 600.0).abs() < 0.01);
+        assert_eq!(previous.accuracy(), 1.0);
+    }
+
+    #[test]
+    fn current_word_follows_the_typing_position() {
+        let text = "가는 말이 곱다.";
+        assert_eq!(current_word(text, 0), 0..2);
+        assert_eq!(current_word(text, 1), 0..2);
+        // 낱말을 다 치고 빈칸을 칠 차례면 다음 낱말을 가리킨다.
+        assert_eq!(current_word(text, 2), 3..5);
+        assert_eq!(current_word(text, 4), 3..5);
+        assert_eq!(current_word(text, 6), 6..9);
+        // 문장보다 길게 쳤으면 마지막 낱말에 머문다.
+        assert_eq!(current_word(text, 20), 6..9);
+        assert_eq!(current_word("", 0), 0..0);
+    }
+
+    #[test]
+    fn target_job_keeps_the_whole_sentence() {
+        for word in [0..0, 0..2, 3..5, 6..9] {
+            let job = target_job("가는 말이 곱다.", word, Color32::WHITE, Color32::RED);
+            assert_eq!(job.text, "가는 말이 곱다.");
+        }
     }
 }

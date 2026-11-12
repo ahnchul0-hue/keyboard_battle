@@ -8,6 +8,8 @@ use eframe::egui::{self, Color32, FontId, Stroke, SystemTheme, TextStyle, Theme,
 /// 화면에 쓰는 색.
 pub struct Palette {
     pub background: Color32,
+    /// 문장 블럭과 결과 창의 바탕.
+    pub card: Color32,
     /// 보통 글.
     pub text: Color32,
     /// 지금 칠 문장처럼 가장 눈에 띄어야 하는 글.
@@ -28,6 +30,7 @@ impl Palette {
         match theme {
             Theme::Dark => Self {
                 background: Color32::from_gray(27),
+                card: Color32::from_gray(38),
                 text: Color32::from_gray(215),
                 plain: Color32::from_gray(240),
                 good: Color32::from_rgb(120, 205, 140),
@@ -38,6 +41,7 @@ impl Palette {
             },
             Theme::Light => Self {
                 background: Color32::from_gray(248),
+                card: Color32::WHITE,
                 text: Color32::from_gray(50),
                 plain: Color32::from_gray(20),
                 good: Color32::from_rgb(15, 115, 60),
@@ -66,6 +70,8 @@ pub fn install(ctx: &egui::Context) {
         let palette = Palette::of(theme);
         ctx.style_mut_of(theme, |style| {
             style.visuals.panel_fill = palette.background;
+            style.visuals.window_fill = palette.card;
+            style.visuals.window_stroke = Stroke::new(1.0, palette.border);
             style.visuals.widgets.noninteractive.fg_stroke.color = palette.text;
             style.visuals.weak_text_color = Some(palette.dim);
             // 기본값은 테두리가 없어, 밝은 화면에서 체크 상자가 바탕에 묻힌다.
@@ -122,6 +128,7 @@ mod tests {
     }
 
     /// 작은 글도 읽을 수 있는 기준(WCAG AA, 4.5:1)을 모든 색이 두 화면에서 넘는다.
+    /// 글은 바탕 위에도, 문장 블럭 위에도 놓인다.
     #[test]
     fn every_colour_is_readable_in_both_themes() {
         for theme in [Theme::Dark, Theme::Light] {
@@ -134,13 +141,15 @@ mod tests {
                 ("dim", palette.dim),
                 ("caret", palette.caret),
             ];
-            for (name, colour) in colours {
-                let ratio = contrast(colour, palette.background);
-                assert!(ratio >= 4.5, "{theme:?} {name}: {ratio:.2}");
+            for (under, surface) in [("바탕", palette.background), ("블럭", palette.card)] {
+                for (name, colour) in colours {
+                    let ratio = contrast(colour, surface);
+                    assert!(ratio >= 4.5, "{theme:?} {under} 위 {name}: {ratio:.2}");
+                }
+                // 글이 아닌 테두리는 3:1이 기준이다.
+                let ratio = contrast(palette.border, surface);
+                assert!(ratio >= 3.0, "{theme:?} {under} 위 border: {ratio:.2}");
             }
-            // 글이 아닌 테두리는 3:1이 기준이다.
-            let ratio = contrast(palette.border, palette.background);
-            assert!(ratio >= 3.0, "{theme:?} border: {ratio:.2}");
         }
     }
 
@@ -152,6 +161,7 @@ mod tests {
         for theme in [Theme::Dark, Theme::Light] {
             let (palette, style) = (Palette::of(theme), ctx.style_of(theme));
             assert_eq!(style.visuals.panel_fill, palette.background);
+            assert_eq!(style.visuals.window_fill, palette.card);
             assert_eq!(style.visuals.text_color(), palette.text);
             assert_eq!(style.visuals.weak_text_color(), palette.dim);
         }

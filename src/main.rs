@@ -2,6 +2,8 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod app;
+mod input;
+mod result;
 mod theme;
 
 use std::sync::Arc;
@@ -52,7 +54,7 @@ fn main() {
         Box::new(|creation| {
             install_font(&creation.egui_ctx);
             theme::install(&creation.egui_ctx);
-            Ok(Box::new(app::CheckApp::default()))
+            Ok(Box::new(app::PracticeApp::default()))
         }),
     );
     if let Err(error) = result {

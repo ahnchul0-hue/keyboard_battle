@@ -45,6 +45,18 @@ pub fn dubeolsik(pos: KeyPos, shift: bool) -> Option<Jamo> {
     row.chars().nth(index).and_then(Jamo::new)
 }
 
+/// 낱자나 문자 하나를 치려면 누르는 글쇠와 Shift 여부. 칠 수 없는 문자면 `None`.
+///
+/// Shift 없이도 나오는 낱자는 Shift 없는 쪽을 고른다.
+pub fn keystroke_for(unit: char) -> Option<(KeyPos, bool)> {
+    [false, true]
+        .into_iter()
+        .flat_map(|shift| KeyPos::all().map(move |pos| (pos, shift)))
+        .find(|&(pos, shift)| {
+            dubeolsik(pos, shift).map(Jamo::as_char) == Some(unit) || qwerty(pos, shift) == unit
+        })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -101,5 +113,20 @@ mod tests {
         plain.sort_unstable();
         plain.dedup();
         assert_eq!(plain.len(), 26);
+    }
+
+    #[test]
+    fn keystroke_for_finds_the_key_that_types_a_character() {
+        assert_eq!(keystroke_for('ㄱ'), Some((key('r'), false)));
+        assert_eq!(keystroke_for('ㄲ'), Some((key('r'), true)));
+        // ㅁ은 Shift를 눌러도 나오지만 Shift 없는 쪽을 고른다.
+        assert_eq!(keystroke_for('ㅁ'), Some((key('a'), false)));
+        assert_eq!(keystroke_for('a'), Some((key('a'), false)));
+        assert_eq!(keystroke_for('{'), Some((key('['), true)));
+        assert_eq!(keystroke_for(' '), Some((key(' '), false)));
+        // 겹낱자와 완성된 글자는 글쇠 하나로 칠 수 없다.
+        for unit in ['ㅘ', 'ㄳ', '가', 'é', '\n'] {
+            assert_eq!(keystroke_for(unit), None, "{unit:?}");
+        }
     }
 }
