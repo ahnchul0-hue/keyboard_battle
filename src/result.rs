@@ -3,9 +3,11 @@
 //! 가장 큰 숫자 둘은 속도와 정확도다. 그 아래에 지난 과정과의 차이, 문장별 기록,
 //! 자주 틀린 글쇠를 두고, 다음 행동은 글쇠 하나로 고르게 한다.
 
+use std::collections::BTreeSet;
+
 use eframe::egui::text::LayoutJob;
 use eframe::egui::{
-    self, Align, Color32, FontId, Frame, Grid, Id, Layout, Modal, RichText, TextFormat,
+    self, Align, Color32, FontId, Frame, Grid, Id, Layout, Modal, RichText, Stroke, TextFormat,
 };
 use keyboard_battle::measure::Tally;
 use keyboard_battle::texts::{Kind, Sentence};
@@ -39,6 +41,8 @@ pub struct Summary<'a> {
     pub best: Option<f64>,
     /// 틀렸을 때 눌러야 했던 글쇠들. 많이 틀린 것부터.
     pub misses: Vec<(char, u32)>,
+    /// 문장마다, 틀리기 시작한 자리(글자 번호)들. `lines`와 순서가 같다.
+    pub slips: &'a [BTreeSet<usize>],
     /// 과정을 끝낸 뒤 흐른 시간(초).
     pub age: f64,
 }
@@ -146,6 +150,34 @@ fn misses_ui(ui: &mut egui::Ui, palette: &Palette, misses: &[(char, u32)]) {
     });
 }
 
+/// 틀리기 시작한 자리를 문장 위에 표시해 보여 준다. 틀린 데가 없는 문장은 건너뛴다.
+fn slips_ui(ui: &mut egui::Ui, palette: &Palette, summary: &Summary<'_>) {
+    let format = |color, marked: bool| TextFormat {
+        font_id: FontId::monospace(16.0),
+        color,
+        underline: if marked {
+            Stroke::new(2.0, color)
+        } else {
+            Stroke::NONE
+        },
+        ..Default::default()
+    };
+    for (index, (line, slips)) in summary.lines.iter().zip(summary.slips).enumerate() {
+        if slips.is_empty() {
+            continue;
+        }
+        let mut job = LayoutJob::default();
+        job.append(&format!("{} ", index + 1), 0.0, format(palette.dim, false));
+        for (at, c) in line.text.chars().enumerate() {
+            // 빈칸에서 틀린 것도 보이도록 밑줄을 함께 긋는다.
+            let slipped = slips.contains(&at);
+            let color = if slipped { palette.bad } else { palette.text };
+            job.append(c.encode_utf8(&mut [0; 4]), 0.0, format(color, slipped));
+        }
+        ui.label(job);
+    }
+}
+
 /// 결과 창을 그린다. 단추를 눌렀으면 고른 행동을 돌려준다.
 pub fn show(ctx: &egui::Context, palette: &Palette, summary: &Summary<'_>) -> Option<Choice> {
     let total: Tally = summary.results.iter().copied().sum();
@@ -162,7 +194,7 @@ pub fn show(ctx: &egui::Context, palette: &Palette, summary: &Summary<'_>) -> Op
         .backdrop_color(Color32::from_black_alpha((BACKDROP * shown) as u8));
     let modal = modal.show(ctx, |ui| {
         ui.set_opacity(shown);
-        ui.set_width(540.0);
+        ui.set_width(580.0);
         ui.horizontal(|ui| {
             let title = format!("과정 {} 결과", summary.number);
             ui.label(RichText::new(title).heading().color(palette.plain));
@@ -207,6 +239,7 @@ pub fn show(ctx: &egui::Context, palette: &Palette, summary: &Summary<'_>) -> Op
         lines_ui(ui, palette, summary);
         ui.add_space(4.0);
         misses_ui(ui, palette, &summary.misses);
+        slips_ui(ui, palette, summary);
         ui.separator();
 
         ui.horizontal(|ui| {

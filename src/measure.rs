@@ -20,6 +20,16 @@ pub fn key_units(text: &str) -> Vec<char> {
     units
 }
 
+/// `text`를 치는 글쇠 가운데 `unit`번째(0부터)가 몇 번째 글자에 드는지.
+/// 글쇠가 문장 밖이면 `None`.
+pub fn char_of_unit(text: &str, unit: usize) -> Option<usize> {
+    let mut keys = 0;
+    text.chars().position(|c| {
+        keys += strokes(c).map_or(1, |keys| keys.len());
+        unit < keys
+    })
+}
+
 /// 두 글쇠 순서가 앞에서부터 몇 개나 같은지.
 pub fn common_prefix(a: &[char], b: &[char]) -> usize {
     a.iter().zip(b).take_while(|(x, y)| x == y).count()
@@ -110,6 +120,16 @@ mod tests {
         assert_eq!(key_units("Ab 1!"), ['A', 'b', ' ', '1', '!']);
         assert_eq!(key_units("가 a").len(), 4);
         assert_eq!(key_units(""), []);
+    }
+
+    #[test]
+    fn char_of_unit_finds_the_character_a_key_belongs_to() {
+        let found: Vec<_> = (0..5).map(|unit| char_of_unit("가나", unit)).collect();
+        assert_eq!(found, [Some(0), Some(0), Some(1), Some(1), None]);
+        // 'a'는 1타, '값'은 4타다.
+        let found: Vec<_> = (0..6).map(|unit| char_of_unit("a값", unit)).collect();
+        assert_eq!(found, [Some(0), Some(1), Some(1), Some(1), Some(1), None]);
+        assert_eq!(char_of_unit("", 0), None);
     }
 
     #[test]

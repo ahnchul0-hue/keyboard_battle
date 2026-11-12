@@ -3,10 +3,10 @@
 //! 문장은 끝까지 정확히 쳐야 다음으로 넘어간다. 틀린 글쇠는 지우고 다시 쳐야 하며,
 //! 그렇게 누른 글쇠는 모두 정확도에 반영된다. 지우개(Backspace)는 세지 않는다.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use crate::keymap::KeyPos;
-use crate::measure::{Tally, common_prefix, key_units};
+use crate::measure::{Tally, char_of_unit, common_prefix, key_units};
 use crate::texts::Sentence;
 use crate::typed::TypedText;
 
@@ -27,6 +27,8 @@ pub struct Round {
     started_at: Option<f64>,
     /// 틀렸을 때 눌러야 했던 글쇠와 그 횟수.
     misses: BTreeMap<char, u32>,
+    /// 문장마다, 틀리기 시작한 자리(글자 번호)들.
+    slips: Vec<BTreeSet<usize>>,
 }
 
 impl Round {
@@ -35,13 +37,14 @@ impl Round {
         Self {
             needed: lines.iter().map(|line| units(line).len() as u32).sum(),
             target: lines.first().map(units).unwrap_or_default(),
-            lines,
             done: Vec::new(),
             typed: TypedText::default(),
             presses: 0,
             wrong: 0,
             started_at: None,
             misses: BTreeMap::new(),
+            slips: vec![BTreeSet::new(); lines.len()],
+            lines,
         }
     }
 
@@ -78,8 +81,9 @@ impl Round {
         let Some(line) = self.current().copied() else {
             return;
         };
-        let expected = self.target.get(self.matched()).copied();
-        let was_on_track = self.matched() == key_units(&self.typed.text()).len();
+        let position = self.matched();
+        let expected = self.target.get(position).copied();
+        let was_on_track = position == key_units(&self.typed.text()).len();
 
         self.started_at.get_or_insert(now);
         self.presses += 1;
@@ -88,9 +92,11 @@ impl Round {
 
         if self.matched() < key_units(&self.typed.text()).len() {
             self.wrong += 1;
-            // 잘 치다가 처음 어긋난 순간에만, 눌러야 했던 글쇠를 적어 둔다.
+            // 잘 치다가 처음 어긋난 순간에만, 눌러야 했던 글쇠와 그 자리를 적어 둔다.
             if let Some(expected) = expected.filter(|_| was_on_track) {
                 *self.misses.entry(expected).or_default() += 1;
+                let line_number = self.done.len();
+                self.slips[line_number].extend(char_of_unit(line.text, position));
             }
             // 틀린 줄 모르고 계속 쳐도 글이 문장보다 길어지지는 않게 한다.
             // 누른 것은 세되 글에는 넣지 않는다.
@@ -162,6 +168,11 @@ impl Round {
         }
         let finished: u32 = self.done.iter().map(|tally| tally.needed).sum();
         (finished + self.matched() as u32) as f32 / self.needed as f32
+    }
+
+    /// 문장마다, 틀리기 시작한 자리(글자 번호)들. 문장 순서와 같다.
+    pub fn slips(&self) -> &[BTreeSet<usize>] {
+        &self.slips
     }
 
     /// 틀렸을 때 눌러야 했던 글쇠들. 많이 틀린 것부터.
@@ -273,6 +284,30 @@ mod tests {
         assert_eq!(round.typed().text(), "거남");
         press_all(&mut round, "ㅏ", 5.0);
         assert_eq!(round.typed().text(), "거남", "'거나마'는 문장보다 길다");
+    }
+
+    /// 틀린 자리는 글쇠가 아니라 글자 번호로 남는다. 같은 자리에서 여러 번 틀려도 한 번만 적는다.
+    #[test]
+    fn slips_remember_which_characters_went_wrong() {
+        let mut round = round(&[(Kind::Hangul, "가나다"), (Kind::English, "cat")]);
+        // '나'의 홀소리를 두 번 틀리고, '다'의 닿소리를 한 번 틀린다.
+        press_all(&mut round, "ㄱㅏㄴㅓ", 0.0);
+        round.backspace();
+        press_all(&mut round, "ㅗ", 1.0);
+        round.backspace();
+        press_all(&mut round, "ㅏㅁ", 2.0);
+        round.backspace();
+        press_all(&mut round, "ㄷㅏ", 3.0);
+        // 둘째 문장은 틀리지 않는다.
+        press_all(&mut round, "cat", 4.0);
+
+        let slips: Vec<Vec<usize>> = round
+            .slips()
+            .iter()
+            .map(|line| line.iter().copied().collect())
+            .collect();
+        assert_eq!(slips, [vec![1, 2], vec![]]);
+        assert!(round.is_finished());
     }
 
     #[test]

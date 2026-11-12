@@ -179,6 +179,7 @@ impl PracticeApp {
             previous: self.history.last().copied(),
             best: self.history.iter().map(Tally::per_minute).reduce(f64::max),
             misses: self.round.misses(),
+            slips: self.round.slips(),
             age: self
                 .finished_at
                 .map_or(0.0, |finished_at| now - finished_at),
