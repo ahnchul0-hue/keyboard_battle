@@ -28,10 +28,22 @@ pub enum Echo {
     Over,
 }
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Settings {
     pub marker: Marker,
     pub echo: Echo,
+    /// 치는 동안 제목·단추·도움말을 흐리게 물릴지.
+    pub focus: bool,
+}
+
+impl Default for Settings {
+    fn default() -> Self {
+        Self {
+            marker: Marker::default(),
+            echo: Echo::default(),
+            focus: true,
+        }
+    }
 }
 
 /// 선택지 한 줄: 이름과, 그 가운데 하나를 고르는 단추들.
@@ -69,5 +81,12 @@ pub fn ui(ui: &mut egui::Ui, palette: &Palette, settings: &mut Settings) {
         "친 글",
         &mut settings.echo,
         &[(Echo::Below, "아래 줄에"), (Echo::Over, "문장 위에 겹쳐")],
+    );
+    choice(
+        ui,
+        palette,
+        "집중 화면",
+        &mut settings.focus,
+        &[(true, "치는 동안 주변을 흐리게"), (false, "끔")],
     );
 }

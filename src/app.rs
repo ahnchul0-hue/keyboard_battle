@@ -26,6 +26,13 @@ const RESULT_GRACE: f64 = 0.8;
 const LIVE_SPEED_AFTER: f64 = 2.0;
 /// 문장을 끝낸 블럭의 테두리가 초록으로 빛나는 시간(초).
 const PASS_GLOW: f64 = 0.35;
+/// 마지막 글쇠를 누르고 이만큼(초) 지나면 치기를 멈춘 것으로 본다.
+const FOCUS_HOLD: f64 = 2.0;
+/// 치는 동안 제목·단추·도움말을 이만큼 흐리게 한다 (0이면 그대로, 1이면 안 보임).
+const FOCUS_FADE: f32 = 0.55;
+/// 글쇠와 글쇠 사이에 마우스가 이보다(점) 많이 움직이면 단추를 찾는 것으로 본다.
+/// 손바닥이 터치패드를 스친 정도는 넘긴다.
+const POINTER_REACH: f32 = 16.0;
 /// 방금 친 과정을 되감아 보이는 동안 화면에 띄우는 설명.
 const REPLAY_CAPTION: &str = "다시 보기";
 /// 위쪽의 속도·정확도·시간을 고쳐 적는 간격(초). 글쇠마다 바뀌는 숫자는 치는 눈을 끌어당긴다.
@@ -39,6 +46,10 @@ pub struct PracticeApp {
     finished_at: Option<f64>,
     /// 막 끝낸 문장의 번호와 끝낸 시각(초). 그 블럭을 잠깐 빛나게 한다.
     passed_at: Option<(usize, f64)>,
+    /// 마지막으로 글쇠를 눌러 친 시각(초). 치는 동안 주변을 흐리게 하는 데 쓴다.
+    typed_at: Option<f64>,
+    /// 그 뒤로 마우스가 움직인 거리(점).
+    pointer_travel: f32,
     /// 이번 실행에서 끝낸 과정들의 기록.
     history: Vec<Tally>,
     /// 방금 친 과정을 되감아 보이는 중이면 그 장치. 이 동안에는 화면이 이쪽의 과정을 보여 준다.
@@ -64,6 +75,8 @@ impl Default for PracticeApp {
             round: Round::new(texts::round(0)),
             finished_at: None,
             passed_at: None,
+            typed_at: None,
+            pointer_travel: 0.0,
             history: Vec::new(),
             player: None,
             stats: InputStats::default(),
@@ -122,6 +135,8 @@ impl PracticeApp {
                         }
                         continue;
                     }
+                    self.typed_at = Some(now);
+                    self.pointer_travel = 0.0;
                     match key {
                         Key::F1 => self.start_tour(now),
                         Key::Escape => self.round.clear_line(now),
@@ -139,6 +154,7 @@ impl PracticeApp {
                     }
                     if self.round.is_finished() {
                         self.finished_at = Some(now);
+                        self.typed_at = None;
                     }
                 }
                 Event::Text(text) => self.stats.log(format!("Text {text:?}")),
@@ -196,6 +212,21 @@ impl PracticeApp {
     fn start_tour(&mut self, now: f64) {
         if self.can_tour() {
             self.player = Some(tour::tour(now));
+        }
+    }
+
+    /// 지금 치는 중이어서 주변을 흐리게 할 때인지.
+    fn focusing(&self, now: f64) -> bool {
+        let typing = self.typed_at.is_some_and(|at| now - at < FOCUS_HOLD);
+        self.settings.focus && typing && self.player.is_none() && self.finished_at.is_none()
+    }
+
+    /// 마우스가 `travel`점 움직였거나 단추가 눌렸음(`pressed`)을 알린다.
+    /// 치다가 마우스를 뚜렷이 움직였으면 단추를 찾는 것이므로, 흐리게 하던 것을 바로 되돌린다.
+    fn pointer_moved(&mut self, travel: f32, pressed: bool) {
+        self.pointer_travel += travel;
+        if pressed || self.pointer_travel > POINTER_REACH {
+            self.typed_at = None;
         }
     }
 
@@ -371,28 +402,32 @@ impl PracticeApp {
     }
 
     /// 제목, 화면 밝기, 진행 상황. 창이 작아도 늘 보이는 곳에 둔다.
-    fn header_ui(&mut self, ui: &mut egui::Ui, palette: &Palette, now: f64) {
+    /// `chrome`은 치는 데 쓰이지 않는 것들(제목, 단추, 도움말)의 또렷한 정도(0 ~ 1)다.
+    fn header_ui(&mut self, ui: &mut egui::Ui, palette: &Palette, now: f64, chrome: f32) {
         let can_tour = self.can_tour();
         let mut tour_asked = false;
-        ui.horizontal(|ui| {
-            let title = RichText::new("키보드 배틀").heading();
-            ui.label(title.color(palette.plain));
-            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                ui.toggle_value(&mut self.show_settings, "설정");
-                let tour = egui::Button::new("둘러보기 (F1)");
-                tour_asked = ui.add_enabled(can_tour, tour).clicked();
-                ui.separator();
-                theme::switcher(ui);
+        ui.scope(|ui| {
+            ui.multiply_opacity(chrome);
+            ui.horizontal(|ui| {
+                let title = RichText::new("키보드 배틀").heading();
+                ui.label(title.color(palette.plain));
+                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                    ui.toggle_value(&mut self.show_settings, "설정");
+                    let tour = egui::Button::new("둘러보기 (F1)");
+                    tour_asked = ui.add_enabled(can_tour, tour).clicked();
+                    ui.separator();
+                    theme::switcher(ui);
+                });
             });
+            if self.show_settings {
+                egui::Frame::group(ui.style()).show(ui, |ui| {
+                    ui.set_width(ui.available_width());
+                    settings::ui(ui, palette, &mut self.settings);
+                });
+            }
         });
         if tour_asked {
             self.start_tour(now);
-        }
-        if self.show_settings {
-            egui::Frame::group(ui.style()).show(ui, |ui| {
-                ui.set_width(ui.available_width());
-                settings::ui(ui, palette, &mut self.settings);
-            });
         }
         ui.add_space(6.0);
         self.progress_ui(ui, palette);
@@ -407,7 +442,7 @@ impl PracticeApp {
     }
 
     /// 문장 블럭들과 그 아래의 도움말.
-    fn blocks_ui(&mut self, ui: &mut egui::Ui, palette: &Palette, now: f64) {
+    fn blocks_ui(&mut self, ui: &mut egui::Ui, palette: &Palette, now: f64, chrome: f32) {
         let look = Look {
             palette,
             size: view::typing_size(ui.available_width()),
@@ -417,16 +452,19 @@ impl PracticeApp {
         for index in 0..self.shown().lines().len() {
             self.card_ui(ui, &look, index, now);
         }
-        let help = "문장을 정확히 다 치면 다음 문장으로 넘어갑니다 · \
-                    Backspace 지우기 · Esc 줄 비우기 · 한/영 키는 누르지 않습니다";
-        ui.label(RichText::new(help).color(palette.dim));
-        if self.stats.keys == 0 && self.player.is_none() {
-            // 아직 아무것도 치지 않은 사람에게만 권한다.
-            let invite = "처음이면 오른쪽 위의 둘러보기(F1)가 20초 동안 쓰는 법을 보여 줍니다";
-            ui.label(RichText::new(invite).color(palette.dim));
-        }
-        ui.add_space(6.0);
-        self.diagnostics_ui(ui, palette);
+        ui.scope(|ui| {
+            ui.multiply_opacity(chrome);
+            let help = "문장을 정확히 다 치면 다음 문장으로 넘어갑니다 · \
+                        Backspace 지우기 · Esc 줄 비우기 · 한/영 키는 누르지 않습니다";
+            ui.label(RichText::new(help).color(palette.dim));
+            if self.stats.keys == 0 && self.player.is_none() {
+                // 아직 아무것도 치지 않은 사람에게만 권한다.
+                let invite = "처음이면 오른쪽 위의 둘러보기(F1)가 20초 동안 쓰는 법을 보여 줍니다";
+                ui.label(RichText::new(invite).color(palette.dim));
+            }
+            ui.add_space(6.0);
+            self.diagnostics_ui(ui, palette);
+        });
     }
 }
 
@@ -448,12 +486,30 @@ impl eframe::App for PracticeApp {
         self.refresh_live(now);
         let palette = Palette::of(ui.ctx().theme());
 
+        let (travel, pressed) = ui.input(|input| {
+            let pointer = &input.pointer;
+            (pointer.delta().length(), pointer.any_pressed())
+        });
+        self.pointer_moved(travel, pressed);
+        // 치는 동안에는 치는 데 쓰이지 않는 것들을 흐리게 물리고, 멈추면 되돌린다.
+        let focusing = self.focusing(now);
+        let faded = ui
+            .ctx()
+            .animate_bool_with_time(egui::Id::unique("focus"), focusing, 0.25);
+        let chrome = 1.0 - FOCUS_FADE * faded;
+        if let Some(typed_at) = self.typed_at.filter(|_| focusing) {
+            // 손을 멈춘 지 정해진 시간이 지나면 되돌리도록 그때 화면을 다시 그린다.
+            let wait = (typed_at + FOCUS_HOLD - now).max(0.01);
+            ui.ctx()
+                .request_repaint_after(Duration::from_secs_f64(wait));
+        }
+
         egui::CentralPanel::default().show(ui, |ui| {
-            self.header_ui(ui, &palette, now);
+            self.header_ui(ui, &palette, now, chrome);
             // 창이 작으면 블럭이 다 들어오지 않으므로 블럭 쪽만 내려 볼 수 있게 한다.
             egui::ScrollArea::vertical()
                 .auto_shrink([false, false])
-                .show(ui, |ui| self.blocks_ui(ui, &palette, now));
+                .show(ui, |ui| self.blocks_ui(ui, &palette, now, chrome));
         });
 
         if let Some(player) = &self.player {
@@ -713,6 +769,51 @@ mod tests {
         let done = type_round(&mut app, 0.0);
         app.handle_events(&named(Key::F1), done + 5.0);
         assert!(app.player.is_none());
+    }
+
+    /// 치는 동안에만 주변을 흐리게 하고, 손을 멈추면 되돌린다.
+    #[test]
+    fn focus_holds_while_typing_and_lets_go_after_a_pause() {
+        let mut app = PracticeApp::default();
+        assert!(!app.focusing(0.0));
+        app.handle_events(&press('ㄷ', true), 10.0);
+        assert!(app.focusing(10.0) && app.focusing(10.0 + FOCUS_HOLD - 0.1));
+        assert!(!app.focusing(10.0 + FOCUS_HOLD));
+
+        // 설정에서 끄면 흐리게 하지 않는다.
+        app.handle_events(&press('ㅏ', true), 20.0);
+        app.settings.focus = false;
+        assert!(!app.focusing(20.0));
+
+        // 결과 창이 떠 있을 때는 흐리게 하지 않는다.
+        let mut app = PracticeApp::default();
+        let done = type_round(&mut app, 0.0);
+        assert!(!app.focusing(done));
+    }
+
+    #[test]
+    fn reaching_for_the_mouse_brings_the_surroundings_back() {
+        let mut app = PracticeApp::default();
+        app.handle_events(&press('ㄷ', true), 10.0);
+        // 손바닥이 터치패드를 스친 정도로는 돌아오지 않는다.
+        app.pointer_moved(POINTER_REACH / 2.0, false);
+        assert!(app.focusing(10.1));
+        app.pointer_moved(POINTER_REACH, false);
+        assert!(!app.focusing(10.1));
+
+        // 다시 치면 다시 흐려지고, 마우스 단추를 누르면 바로 돌아온다.
+        app.handle_events(&press('ㅏ', true), 11.0);
+        assert!(app.focusing(11.1));
+        app.pointer_moved(0.0, true);
+        assert!(!app.focusing(11.1));
+
+        // 스친 거리는 글쇠를 누를 때마다 처음부터 다시 잰다.
+        for tenth in 0..10 {
+            let now = 12.0 + f64::from(tenth) / 10.0;
+            app.handle_events(&press('ㅏ', true), now);
+            app.pointer_moved(POINTER_REACH / 2.0, false);
+            assert!(app.focusing(now));
+        }
     }
 
     #[test]
