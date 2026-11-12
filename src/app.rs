@@ -23,6 +23,8 @@ const TYPING_FONT_SIZE: f32 = 24.0;
 const RESULT_GRACE: f64 = 0.8;
 /// 속도는 이만큼(초) 친 뒤부터 보여 준다. 처음 한두 글쇠로 낸 속도는 터무니없이 크다.
 const LIVE_SPEED_AFTER: f64 = 2.0;
+/// 위쪽의 속도·정확도·시간을 고쳐 적는 간격(초). 글쇠마다 바뀌는 숫자는 치는 눈을 끌어당긴다.
+const LIVE_EVERY: f64 = 1.0;
 
 pub struct PracticeApp {
     /// 지금 과정의 번호 (0부터).
@@ -36,6 +38,10 @@ pub struct PracticeApp {
     show_recent: bool,
     /// 이번 화면 갱신에 글쇠가 눌렸는지. 눌렸으면 지금 칠 블럭이 보이는 곳으로 화면을 옮긴다.
     follow: bool,
+    /// 위쪽에 보여 주는 지금까지의 기록과, 그것을 적은 시각(초)·그때 끝낸 문장 수.
+    live: Tally,
+    live_at: f64,
+    live_lines: usize,
     /// 화면을 그리는 데 쓰인 그래픽 장치. 확인 결과에 적는다.
     renderer: String,
 }
@@ -50,6 +56,9 @@ impl Default for PracticeApp {
             stats: InputStats::default(),
             show_recent: false,
             follow: false,
+            live: Tally::default(),
+            live_at: f64::NEG_INFINITY,
+            live_lines: 0,
             renderer: String::new(),
         }
     }
@@ -136,6 +145,16 @@ impl PracticeApp {
         self.finished_at = None;
     }
 
+    /// 위쪽에 보여 주는 기록을 고쳐 적는다. 정해진 간격이 지났거나 문장을 막 끝냈을 때만 바꾼다.
+    fn refresh_live(&mut self, now: f64) {
+        let lines = self.round.results().len();
+        let so_far = self.round.so_far(now);
+        let due = now - self.live_at >= LIVE_EVERY;
+        if due || lines != self.live_lines || so_far.presses < self.live.presses {
+            (self.live, self.live_at, self.live_lines) = (so_far, now, lines);
+        }
+    }
+
     fn summary(&self) -> Summary<'_> {
         Summary {
             number: self.number + 1,
@@ -179,7 +198,7 @@ impl PracticeApp {
     }
 
     /// 과정 번호, 문장 번호, 진행 막대, 그리고 지금까지의 속도와 정확도.
-    fn progress_ui(&self, ui: &mut egui::Ui, palette: &Palette, now: f64) {
+    fn progress_ui(&self, ui: &mut egui::Ui, palette: &Palette) {
         let lines = self.round.lines().len();
         let line = (self.round.results().len() + 1).min(lines);
         let fraction = self.round.progress();
@@ -191,7 +210,7 @@ impl PracticeApp {
             );
             ui.label(RichText::new(place).color(palette.plain));
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                let so_far = self.round.so_far(now);
+                let so_far = self.live;
                 let live = if so_far.presses == 0 {
                     "첫 글쇠를 누르면 시간을 잽니다".to_owned()
                 } else {
@@ -258,14 +277,14 @@ impl PracticeApp {
     }
 
     /// 제목, 화면 밝기, 진행 상황. 창이 작아도 늘 보이는 곳에 둔다.
-    fn header_ui(&self, ui: &mut egui::Ui, palette: &Palette, now: f64) {
+    fn header_ui(&self, ui: &mut egui::Ui, palette: &Palette) {
         ui.horizontal(|ui| {
             let title = RichText::new("키보드 배틀").heading();
             ui.label(title.color(palette.plain));
             ui.with_layout(Layout::right_to_left(Align::Center), theme::switcher);
         });
         ui.add_space(6.0);
-        self.progress_ui(ui, palette, now);
+        self.progress_ui(ui, palette);
         ui.add_space(10.0);
     }
 
@@ -300,10 +319,11 @@ impl eframe::App for PracticeApp {
         let now = ui.input(|input| input.time);
         let events = ui.input(|input| input.events.clone());
         self.handle_events(&events, now);
+        self.refresh_live(now);
         let palette = Palette::of(ui.ctx().theme());
 
         egui::CentralPanel::default().show(ui, |ui| {
-            self.header_ui(ui, &palette, now);
+            self.header_ui(ui, &palette);
             // 창이 작으면 블럭이 다 들어오지 않으므로 블럭 쪽만 내려 볼 수 있게 한다.
             egui::ScrollArea::vertical()
                 .auto_shrink([false, false])
@@ -316,8 +336,10 @@ impl eframe::App for PracticeApp {
                 self.leave_result(choice);
             }
         } else if self.round.is_timing() {
-            // 글쇠를 누르지 않는 동안에도 시간과 속도가 흐르게 한다.
-            ui.ctx().request_repaint_after(Duration::from_millis(200));
+            // 글쇠를 누르지 않는 동안에도, 다음에 숫자를 고쳐 적을 때가 되면 화면을 다시 그린다.
+            let wait = (self.live_at + LIVE_EVERY - now).max(0.05);
+            ui.ctx()
+                .request_repaint_after(Duration::from_secs_f64(wait));
         }
 
         // 버튼이 초점을 쥐면 사이띄개와 Enter가 그 버튼을 눌러 버리므로, 초점을 늘 비워 둔다.
@@ -398,6 +420,41 @@ mod tests {
         let keys = key_units(first).len() as u32;
         assert_eq!((app.stats.keys, app.stats.taken_by_ime), (keys, 0));
         assert_eq!(app.finished_at, None);
+    }
+
+    /// 위쪽 숫자는 글쇠마다 바뀌지 않고, 1초가 지나거나 문장을 끝냈을 때만 바뀐다.
+    #[test]
+    fn live_numbers_change_once_a_second_or_when_a_line_ends() {
+        let mut app = PracticeApp::default();
+        app.refresh_live(0.0);
+        assert_eq!(app.live.presses, 0);
+
+        app.handle_events(&press('ㄷ', true), 5.0);
+        app.refresh_live(5.0);
+        assert_eq!(app.live.presses, 1);
+        for (unit, now) in [('ㅏ', 5.2), ('ㄹ', 5.4), ('ㅏ', 5.6)] {
+            app.handle_events(&press(unit, true), now);
+            app.refresh_live(now);
+        }
+        assert_eq!(app.live.presses, 1, "1초가 지나기 전에는 그대로다");
+        app.refresh_live(6.0);
+        assert_eq!(app.live.presses, 4);
+
+        let mut app = PracticeApp::default();
+        let done = type_line(&mut app, 0.0);
+        app.refresh_live(done);
+        let first = app.round.results()[0];
+        assert_eq!(
+            app.live.needed, first.needed,
+            "문장을 끝내면 바로 고쳐 적는다"
+        );
+
+        // 새 과정이 시작되면 숫자도 처음으로 돌아간다.
+        type_round(&mut app, done);
+        app.refresh_live(done + 100.0);
+        app.leave_result(Choice::Next);
+        app.refresh_live(done + 100.1);
+        assert_eq!(app.live, Tally::default());
     }
 
     #[test]
