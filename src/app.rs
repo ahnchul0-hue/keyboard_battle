@@ -4,120 +4,25 @@
 //! 과정이 끝나면 결과 창을 띄우고, 거기서 새 문장으로 넘어간다.
 //! 이 화면은 글상자를 쓰지 않으므로 OS 입력기는 켜지지 않는다.
 
-use std::ops::Range;
 use std::time::Duration;
 
-use eframe::egui::text::{CCursor, LayoutJob};
-use eframe::egui::{
-    self, Align, Color32, Event, FontId, Key, Layout, RichText, Sense, Stroke, StrokeKind,
-    TextFormat,
-};
+use eframe::egui::{self, Align, Event, Key, Layout, RichText};
 use keyboard_battle::measure::Tally;
 use keyboard_battle::round::Round;
 use keyboard_battle::texts;
-use keyboard_battle::typed::TypedText;
 
 use crate::input::{InputStats, key_pos};
 use crate::result::{self, Choice, Summary, clock};
 use crate::theme::{self, Palette};
+use crate::view::{self, Look, Stage};
 
+/// 문장 글자의 크기.
 const TYPING_FONT_SIZE: f32 = 24.0;
 /// 결과 창이 뜬 뒤 이만큼(초)은 글쇠로 창을 넘기지 못한다.
 /// 문장 끝에 버릇처럼 누른 Enter 때문에 결과를 못 보고 지나치는 일을 막는다.
 const RESULT_GRACE: f64 = 0.8;
 /// 속도는 이만큼(초) 친 뒤부터 보여 준다. 처음 한두 글쇠로 낸 속도는 터무니없이 크다.
 const LIVE_SPEED_AFTER: f64 = 2.0;
-
-/// 타자 영역의 글자 모양. `underline`이 있으면 그 색으로 밑줄을 긋는다.
-fn typing_format(color: Color32, underline: Option<Color32>) -> TextFormat {
-    TextFormat {
-        font_id: FontId::monospace(TYPING_FONT_SIZE),
-        color,
-        underline: underline.map_or(Stroke::NONE, |color| Stroke::new(2.0, color)),
-        ..Default::default()
-    }
-}
-
-/// 지금 칠 낱말의 범위(글자 번호). `typed`는 지금까지 친 글자 수다.
-fn current_word(text: &str, typed: usize) -> Range<usize> {
-    let chars: Vec<char> = text.chars().collect();
-    let mut start = typed.min(chars.len());
-    // 낱말 사이의 빈칸을 칠 차례면 그다음 낱말을 가리킨다.
-    while chars.get(start) == Some(&' ') {
-        start += 1;
-    }
-    // 낱말 한가운데면 그 낱말의 처음으로 돌아간다.
-    while start > 0 && chars[start - 1] != ' ' {
-        start -= 1;
-    }
-    let length = chars[start..].iter().take_while(|&&c| c != ' ').count();
-    start..start + length
-}
-
-/// 칠 문장. `word`(글자 번호 범위)에는 밑줄을 그어, 눈이 따라갈 자리를 알려 준다.
-fn target_job(text: &str, word: Range<usize>, color: Color32, mark: Color32) -> LayoutJob {
-    let byte = |index: usize| {
-        let found = text.char_indices().nth(index);
-        found.map_or(text.len(), |(at, _)| at)
-    };
-    let (start, end) = (byte(word.start), byte(word.end));
-    let mut job = LayoutJob::default();
-    job.append(&text[..start], 0.0, typing_format(color, None));
-    job.append(&text[start..end], 0.0, typing_format(color, Some(mark)));
-    job.append(&text[end..], 0.0, typing_format(color, None));
-    job
-}
-
-/// 친 글을 칠 문장과 견주어 색을 입힌다. 조합 중인 글자에는 밑줄을 긋는다.
-fn typed_job(typed: &TypedText, target: &str, palette: &Palette) -> LayoutJob {
-    let mut job = LayoutJob::default();
-    let mut expected = target.chars();
-    for c in typed.done().chars() {
-        // 틀린 사이띄개도 보이도록 틀린 글자에는 밑줄을 긋는다.
-        let format = if expected.next() == Some(c) {
-            typing_format(palette.good, None)
-        } else {
-            typing_format(palette.bad, Some(palette.bad))
-        };
-        job.append(c.encode_utf8(&mut [0; 4]), 0.0, format);
-    }
-    if let Some(c) = typed.composing() {
-        let format = typing_format(palette.plain, Some(palette.plain));
-        job.append(c.encode_utf8(&mut [0; 4]), 0.0, format);
-    }
-    // 아무것도 치지 않았을 때도 줄 높이가 유지되고 커서가 설 자리가 있도록 빈칸을 하나 둔다.
-    job.append(" ", 0.0, typing_format(palette.plain, None));
-    job
-}
-
-/// 친 글을 그린다. 조합 중인 글자는 밑줄이 커서 노릇을 하므로, 그 밖일 때만 글 끝에 커서를 세운다.
-fn typed_ui(ui: &mut egui::Ui, typed: &TypedText, target: &str, palette: &Palette) {
-    let mut job = typed_job(typed, target, palette);
-    job.wrap.max_width = ui.available_width();
-    let galley = ui.painter().layout_job(job);
-    let (rect, _) = ui.allocate_exact_size(galley.size(), Sense::hover());
-    if typed.composing().is_none() {
-        let end = galley.pos_from_cursor(CCursor::new(typed.done().chars().count()));
-        let top = rect.min + end.min.to_vec2();
-        let caret = egui::Rect::from_min_size(top, egui::vec2(2.0, end.height()));
-        ui.painter().rect_filled(caret, 0.0, palette.caret);
-    }
-    ui.painter().galley(rect.min, galley, palette.plain);
-}
-
-/// 과정 전체에서 얼마나 쳤는지 보여 주는 막대.
-fn progress_bar(ui: &mut egui::Ui, fraction: f32, palette: &Palette) {
-    let size = egui::vec2(ui.available_width(), 10.0);
-    let (track, _) = ui.allocate_exact_size(size, Sense::hover());
-    let radius = track.height() / 2.0;
-    let mut filled = track;
-    filled.set_width(track.width() * fraction.clamp(0.0, 1.0));
-    let painter = ui.painter();
-    painter.rect_filled(track, radius, palette.card);
-    painter.rect_filled(filled, radius, palette.caret);
-    let outline = Stroke::new(1.0, palette.border);
-    painter.rect_stroke(track, radius, outline, StrokeKind::Inside);
-}
 
 pub struct PracticeApp {
     /// 지금 과정의 번호 (0부터).
@@ -305,57 +210,21 @@ impl PracticeApp {
             });
         });
         ui.add_space(4.0);
-        progress_bar(ui, fraction, palette);
+        view::progress_bar(ui, fraction, palette);
     }
 
     /// 문장 하나를 담은 블럭.
-    fn card_ui(&self, ui: &mut egui::Ui, palette: &Palette, index: usize) {
+    fn card_ui(&self, ui: &mut egui::Ui, look: &Look<'_>, index: usize) {
         let line = self.round.lines()[index];
-        let result = self.round.results().get(index);
         let is_current = self.round.results().len() == index;
-        let (status, status_color) = match result {
-            Some(_) => ("통과", palette.good),
-            None if is_current => ("지금", palette.plain),
-            None => ("대기", palette.dim),
+        let stage = match self.round.results().get(index) {
+            Some(tally) => Stage::Done(tally),
+            None if is_current => Stage::Current(self.round.typed()),
+            None => Stage::Waiting,
         };
-        let card = egui::Frame::new()
-            .fill(palette.card)
-            .corner_radius(8.0)
-            .inner_margin(12.0);
-        // 지금 칠 블럭은 테두리를 굵게 한다. 나머지는 그만큼 바깥을 띄워 블럭 크기가 달라지지 않게 한다.
-        let card = if is_current {
-            card.stroke(Stroke::new(2.0, palette.caret))
-        } else {
-            card.stroke(Stroke::new(1.0, palette.border))
-                .outer_margin(1.0)
-        };
-        let shown = card.show(ui, |ui| {
-            ui.set_width(ui.available_width());
-            ui.horizontal(|ui| {
-                let label = format!("{status} · {}", line.kind.name());
-                ui.label(RichText::new(label).color(status_color));
-                if let Some(tally) = result {
-                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                        let record = format!(
-                            "{:.0} 타/분 · 정확도 {:.0}%",
-                            tally.per_minute(),
-                            (tally.accuracy() * 100.0).floor()
-                        );
-                        ui.label(RichText::new(record).color(palette.dim));
-                    });
-                }
-            });
-            if is_current {
-                let typed = self.round.typed();
-                let word = current_word(line.text, typed.done().chars().count());
-                ui.label(target_job(line.text, word, palette.plain, palette.caret));
-                typed_ui(ui, typed, line.text, palette);
-            } else {
-                ui.label(target_job(line.text, 0..0, palette.dim, palette.dim));
-            }
-        });
+        let card = view::card(ui, look, &line, stage);
         if is_current && self.follow {
-            shown.response.scroll_to_me(Some(Align::Center));
+            card.scroll_to_me(Some(Align::Center));
         }
         ui.add_space(6.0);
     }
@@ -402,8 +271,12 @@ impl PracticeApp {
 
     /// 문장 블럭들과 그 아래의 도움말.
     fn blocks_ui(&mut self, ui: &mut egui::Ui, palette: &Palette) {
+        let look = Look {
+            palette,
+            size: TYPING_FONT_SIZE,
+        };
         for index in 0..self.round.lines().len() {
-            self.card_ui(ui, palette, index);
+            self.card_ui(ui, &look, index);
         }
         let help = "문장을 정확히 다 치면 다음 문장으로 넘어갑니다 · \
                     Backspace 지우기 · Esc 줄 비우기 · 한/영 키는 누르지 않습니다";
@@ -591,27 +464,5 @@ mod tests {
         // 0.1초에 한 글쇠씩 쳤다.
         assert!((previous.per_minute() - 600.0).abs() < 0.01);
         assert_eq!(previous.accuracy(), 1.0);
-    }
-
-    #[test]
-    fn current_word_follows_the_typing_position() {
-        let text = "가는 말이 곱다.";
-        assert_eq!(current_word(text, 0), 0..2);
-        assert_eq!(current_word(text, 1), 0..2);
-        // 낱말을 다 치고 빈칸을 칠 차례면 다음 낱말을 가리킨다.
-        assert_eq!(current_word(text, 2), 3..5);
-        assert_eq!(current_word(text, 4), 3..5);
-        assert_eq!(current_word(text, 6), 6..9);
-        // 문장보다 길게 쳤으면 마지막 낱말에 머문다.
-        assert_eq!(current_word(text, 20), 6..9);
-        assert_eq!(current_word("", 0), 0..0);
-    }
-
-    #[test]
-    fn target_job_keeps_the_whole_sentence() {
-        for word in [0..0, 0..2, 3..5, 6..9] {
-            let job = target_job("가는 말이 곱다.", word, Color32::WHITE, Color32::RED);
-            assert_eq!(job.text, "가는 말이 곱다.");
-        }
     }
 }

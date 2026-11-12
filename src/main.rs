@@ -5,6 +5,7 @@ mod app;
 mod input;
 mod result;
 mod theme;
+mod view;
 
 use std::sync::Arc;
 
@@ -44,7 +45,7 @@ fn main() {
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_title("키보드 배틀")
-            .with_inner_size([960.0, 640.0])
+            .with_inner_size([960.0, 700.0])
             .with_min_inner_size([720.0, 480.0]),
         ..Default::default()
     };
