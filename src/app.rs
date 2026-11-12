@@ -17,8 +17,6 @@ use crate::settings::{self, Settings};
 use crate::theme::{self, Palette};
 use crate::view::{self, Look, Stage};
 
-/// 문장 글자의 크기.
-const TYPING_FONT_SIZE: f32 = 24.0;
 /// 결과 창이 뜬 뒤 이만큼(초)은 글쇠로 창을 넘기지 못한다.
 /// 문장 끝에 버릇처럼 누른 Enter 때문에 결과를 못 보고 지나치는 일을 막는다.
 const RESULT_GRACE: f64 = 0.8;
@@ -335,7 +333,7 @@ impl PracticeApp {
     fn blocks_ui(&mut self, ui: &mut egui::Ui, palette: &Palette, now: f64) {
         let look = Look {
             palette,
-            size: TYPING_FONT_SIZE,
+            size: view::typing_size(ui.available_width()),
             marker: self.settings.marker,
             echo: self.settings.echo,
         };

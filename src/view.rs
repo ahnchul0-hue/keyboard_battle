@@ -10,11 +10,25 @@ use eframe::egui::{
 };
 use keyboard_battle::measure::Tally;
 use keyboard_battle::overlay::{self, Cell, State};
-use keyboard_battle::texts::Sentence;
+use keyboard_battle::texts::{MAX_CELLS, Sentence};
 use keyboard_battle::typed::TypedText;
 
 use crate::settings::{Echo, Marker};
 use crate::theme::Palette;
+
+/// 블럭의 테두리와 안쪽 여백이 좌우로 차지하는 너비.
+const CARD_INSET: f32 = 2.0 * (CARD_PADDING + 2.0);
+const CARD_PADDING: f32 = 12.0;
+
+/// 블럭이 놓일 자리의 너비 `width`에 맞춘 문장 글자 크기.
+///
+/// 가장 긴 문장과 커서가 한 줄에 들어오는 가장 큰 크기를 고른다. 글자 한 칸의 너비가
+/// 정수 픽셀이 되어야 글자가 또렷하므로 짝수로 맞추고, 너무 작거나 크지 않게 한다.
+pub fn typing_size(width: f32) -> f32 {
+    // 글자 한 칸의 너비는 글자 크기의 절반이다.
+    let fits = 2.0 * (width - CARD_INSET) / (MAX_CELLS + 1) as f32;
+    ((fits / 2.0).floor() * 2.0).clamp(16.0, 40.0)
+}
 
 /// 블럭을 그리는 데 드는 것들.
 pub struct Look<'a> {
@@ -193,7 +207,7 @@ pub fn card(
     let frame = egui::Frame::new()
         .fill(palette.card)
         .corner_radius(8.0)
-        .inner_margin(12.0);
+        .inner_margin(CARD_PADDING);
     // 지금 칠 블럭은 테두리를 굵게 한다. 나머지는 그만큼 바깥을 띄워 블럭 크기가 달라지지 않게 한다.
     let frame = match stage {
         Stage::Current(_) => frame.stroke(Stroke::new(2.0, palette.caret)),
@@ -281,6 +295,31 @@ pub fn progress_bar(ui: &mut egui::Ui, fraction: f32, palette: &Palette) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 창이 넓어지면 글자도 커지고, 어느 너비에서든 가장 긴 문장이 한 줄에 들어온다.
+    #[test]
+    fn typing_size_grows_with_the_window_and_always_fits() {
+        // 기본 창(960)과 가장 좁은 창(720)에서 블럭이 놓이는 너비.
+        assert_eq!(typing_size(944.0), 24.0);
+        assert_eq!(typing_size(704.0), 18.0);
+        assert_eq!(typing_size(1264.0), 34.0);
+        assert_eq!(typing_size(3000.0), 40.0, "한없이 커지지는 않는다");
+        assert_eq!(
+            typing_size(300.0),
+            16.0,
+            "읽을 수 없을 만큼 작아지지는 않는다"
+        );
+
+        let mut last = 0.0;
+        for width in (704..2000).step_by(7) {
+            let width = width as f32;
+            let size = typing_size(width);
+            assert!(size >= last && size % 2.0 == 0.0);
+            let line = (MAX_CELLS + 1) as f32 * size / 2.0;
+            assert!(line <= width - CARD_INSET, "{width}: {size}");
+            last = size;
+        }
+    }
 
     #[test]
     fn current_word_follows_the_typing_position() {

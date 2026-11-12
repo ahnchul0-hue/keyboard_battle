@@ -4,6 +4,10 @@
 
 use crate::typed::Script;
 
+/// 문장 하나의 가장 긴 길이(칸). 영문·숫자·기호는 한 칸, 한글은 두 칸을 차지한다.
+/// 화면은 이 길이의 문장이 한 줄에 들어오도록 글자 크기를 정한다.
+pub const MAX_CELLS: usize = 70;
+
 /// 문장의 종류.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Kind {
@@ -149,17 +153,15 @@ mod tests {
         );
     }
 
-    /// 창이 가장 좁을 때도 한두 줄에 들어오도록 문장 길이를 묶어 둔다.
     #[test]
     fn sentences_are_not_too_long() {
         for sentence in all_sentences() {
-            // 한글은 영문 두 칸 너비를 차지한다.
             let cells: usize = sentence
                 .text
                 .chars()
                 .map(|c| if c.is_ascii() { 1 } else { 2 })
                 .sum();
-            assert!(cells <= 70, "{} ({cells}칸)", sentence.text);
+            assert!(cells <= MAX_CELLS, "{} ({cells}칸)", sentence.text);
         }
     }
 }
