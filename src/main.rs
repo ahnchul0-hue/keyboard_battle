@@ -30,7 +30,15 @@ fn install_font(ctx: &egui::Context) {
     ctx.set_fonts(fonts);
 }
 
+/// 창이나 웹 화면이 준비되면 글꼴과 색을 넣고 연습 화면을 만든다.
+fn create_app(creation: &eframe::CreationContext<'_>) -> Box<dyn eframe::App> {
+    install_font(&creation.egui_ctx);
+    theme::install(&creation.egui_ctx);
+    Box::new(app::PracticeApp::default())
+}
+
 /// 콘솔이 없어 오류가 보이지 않으므로, 실행 파일 옆에 적어 둔다.
+#[cfg(not(target_arch = "wasm32"))]
 fn report_failure(message: &str) {
     eprintln!("{message}");
     if let Ok(exe) = std::env::current_exe() {
@@ -39,6 +47,7 @@ fn report_failure(message: &str) {
     }
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 fn main() {
     std::panic::set_hook(Box::new(|panic| report_failure(&panic.to_string())));
 
@@ -52,14 +61,42 @@ fn main() {
     let result = eframe::run_native(
         "keyboard_battle",
         options,
-        Box::new(|creation| {
-            install_font(&creation.egui_ctx);
-            theme::install(&creation.egui_ctx);
-            Ok(Box::new(app::PracticeApp::default()))
-        }),
+        Box::new(|creation| Ok(create_app(creation))),
     );
     if let Err(error) = result {
         report_failure(&format!("창을 열지 못했습니다: {error}"));
         std::process::exit(1);
     }
+}
+
+/// 브라우저에서는 `web/index.html`의 canvas에 화면을 그린다.
+#[cfg(target_arch = "wasm32")]
+fn main() {
+    use eframe::wasm_bindgen::JsCast as _;
+    use eframe::web_sys;
+
+    wasm_bindgen_futures::spawn_local(async {
+        let document = web_sys::window().and_then(|window| window.document());
+        let element = |id: &str| document.as_ref().and_then(|d| d.get_element_by_id(id));
+        let canvas = element("screen")
+            .and_then(|canvas| canvas.dyn_into::<web_sys::HtmlCanvasElement>().ok())
+            .expect("index.html에 id가 screen인 canvas가 있다");
+
+        let started = eframe::WebRunner::new()
+            .start(
+                canvas,
+                eframe::WebOptions::default(),
+                Box::new(|creation| Ok(create_app(creation))),
+            )
+            .await;
+        // 불러오는 중이라는 안내를 지우거나, 못 열었으면 그 까닭으로 바꾼다.
+        if let Some(note) = element("note") {
+            match started {
+                Ok(()) => note.remove(),
+                Err(error) => {
+                    note.set_text_content(Some(&format!("화면을 열지 못했습니다: {error:?}")));
+                }
+            }
+        }
+    });
 }

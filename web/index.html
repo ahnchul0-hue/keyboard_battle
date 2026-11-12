@@ -1,0 +1,48 @@
+<!doctype html>
+<html lang="ko">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>키보드 배틀</title>
+    <style>
+      html,
+      body {
+        height: 100%;
+        margin: 0;
+        overflow: hidden;
+        background: #1b1b1b;
+      }
+      @media (prefers-color-scheme: light) {
+        html,
+        body {
+          background: #f8f8f8;
+        }
+      }
+      canvas {
+        display: block;
+        width: 100%;
+        height: 100%;
+        outline: none;
+      }
+      #note {
+        position: absolute;
+        inset: 40% 0 auto;
+        margin: 0;
+        text-align: center;
+        font: 16px sans-serif;
+        color: #a0a0a0;
+      }
+    </style>
+  </head>
+  <body>
+    <canvas id="screen"></canvas>
+    <p id="note">불러오는 중…</p>
+    <script type="module">
+      import init from "./keyboard_battle.js";
+
+      init().catch((error) => {
+        document.getElementById("note").textContent = `화면을 열지 못했습니다: ${error}`;
+      });
+    </script>
+  </body>
+</html>

@@ -1,3 +1,5 @@
 [toolchain]
 channel = "1.97.0"
 components = ["clippy", "rustfmt"]
+# 브라우저용 빌드에 쓴다.
+targets = ["wasm32-unknown-unknown"]

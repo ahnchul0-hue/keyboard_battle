@@ -1105,6 +1105,7 @@ name = "keyboard_battle"
 version = "0.0.1"
 dependencies = [
  "eframe",
+ "wasm-bindgen-futures",
 ]
 
 [[package]]

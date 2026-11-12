@@ -61,6 +61,22 @@ OS 입력기를 쓰지 않고, 눌린 글쇠의 자리를 직접 읽어 프로�
 cargo run --release
 ```
 
+### 브라우저에서
+
+같은 프로그램을 웹용으로도 빌드할 수 있습니다.
+
+```sh
+web/build.sh
+python3 -m http.server --directory target/web-dist
+```
+
+그런 다음 `http://localhost:8000`을 엽니다. CI의 **Artifacts**에 있는 `keyboard_battle-web`에도 같은 묶음이 들어 있습니다.
+
+저장소 **Settings → Pages**에서 Source를 **GitHub Actions**로 바꿔 두면,
+`main`에 반영될 때마다 `https://ahnchul0-hue.github.io/keyboard_battle/`에 올라갑니다.
+
+브라우저에서는 OS 입력기가 끼어드는 방식이 달라, 윈도우 실행 파일의 입력 확인을 대신하지는 못합니다.
+
 ## 입력 확인 방법
 
 한글 입력이 OS 입력기 상태와 무관하게 되는지는 실제 PC에서 쳐 봐야 알 수 있습니다. **한/영 키는 누르지 않습니다.**
@@ -97,7 +113,9 @@ cargo run --release
 | `src/app.rs` | 연습 화면 |
 | `src/result.rs` | 결과 창 |
 | `src/input.rs` | 글쇠 입력 읽기와 입력 진단 |
+| `src/view.rs` | 문장 블럭과 진행 막대 그리기 |
 | `src/theme.rs` | 화면 밝기 전환, 색, 글자 크기 |
+| `web/` | 브라우저용 화면 틀과 빌드 스크립트 |
 
 ```sh
 cargo test                                  # 테스트

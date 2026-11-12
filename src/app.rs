@@ -94,8 +94,9 @@ impl PracticeApp {
                         Key::Escape => self.round.clear_line(),
                         Key::Backspace => self.round.backspace(),
                         _ => {
-                            let os_sent_text =
-                                matches!(events.get(index + 1), Some(Event::Text(_)));
+                            // 브라우저는 글쇠와 문자를 따로 보내지 않으므로 이 판정을 쓸 수 없다.
+                            let os_sent_text = cfg!(target_arch = "wasm32")
+                                || matches!(events.get(index + 1), Some(Event::Text(_)));
                             self.press(*physical_key, shift, os_sent_text, now);
                         }
                     }

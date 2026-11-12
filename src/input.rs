@@ -62,6 +62,11 @@ impl InputStats {
             )
         } else if keys == 0 {
             "아직 입력이 없습니다.".to_owned()
+        } else if cfg!(target_arch = "wasm32") {
+            // 브라우저는 글쇠와 문자를 따로 알려 주지 않아, 아래 판정을 할 수 없다.
+            format!(
+                "글쇠 {keys}개를 받았습니다. 브라우저에서는 OS 입력기가 끼어들었는지 알 수 없습니다."
+            )
         } else if taken_by_ime > 0 || self.ime_events > 0 {
             format!(
                 "글쇠 {keys}개 중 {taken_by_ime}개는 OS 입력기가 먼저 받았지만, \

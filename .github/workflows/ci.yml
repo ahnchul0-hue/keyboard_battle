@@ -52,3 +52,17 @@ jobs:
           name: keyboard_battle-windows
           path: target/release/keyboard_battle.exe
           if-no-files-found: error
+
+  web:
+    name: 빌드 (웹)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - run: rustup toolchain install
+      - uses: Swatinem/rust-cache@v2
+      - run: web/build.sh
+      - uses: actions/upload-artifact@v7
+        with:
+          name: keyboard_battle-web
+          path: target/web-dist
+          if-no-files-found: error
