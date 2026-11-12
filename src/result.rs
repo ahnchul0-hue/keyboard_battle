@@ -1,6 +1,6 @@
 //! 과정이 끝났을 때 뜨는 결과 창.
 //!
-//! 가장 큰 숫자 둘은 속도와 정확도다. 그 아래에 지난 과정과의 차이, 문장별 기록,
+//! 가장 큰 숫자 둘은 속도와 정확도다. 그 아래에 다음에 바꿔 볼 한 가지, 문장별 기록,
 //! 자주 틀린 글쇠를 두고, 다음 행동은 글쇠 하나로 고르게 한다.
 
 use std::collections::BTreeSet;
@@ -18,6 +18,10 @@ use crate::theme::Palette;
 const APPEAR: f64 = 0.2;
 /// 뒤 화면을 가리는 정도 (0 ~ 255). 방금 친 블럭이 비쳐 보이도록 옅게 둔다.
 const BACKDROP: f32 = 70.0;
+/// 결과 창과 화면 끝 사이에 남기는 틈.
+const EDGE: f32 = 12.0;
+/// 창 맨 아래, 단추 줄과 그 위 가름줄이 차지하는 높이.
+const BUTTON_ROW: f32 = 44.0;
 
 /// 결과 창에서 고른 다음 행동.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -45,6 +49,10 @@ pub struct Summary<'a> {
     pub misses: Vec<(char, u32)>,
     /// 문장마다, 틀리기 시작한 자리(글자 번호)들. `lines`와 순서가 같다.
     pub slips: &'a [BTreeSet<usize>],
+    /// 틀린 글쇠를 누르고, 지우고, 다시 치는 데 쓴 시간(초).
+    pub repair_seconds: f64,
+    /// 다음 과정에서 바꿔 볼 한 가지와 그 근거.
+    pub counsel: Option<(String, String)>,
     /// 과정을 끝낸 뒤 흐른 시간(초).
     pub age: f64,
 }
@@ -102,6 +110,16 @@ fn figure(
             }
         });
     });
+}
+
+/// 다음 과정에서 바꿔 볼 한 가지. 숫자 바로 아래에 두어, 결과를 본 눈이 곧바로 닿게 한다.
+fn counsel_ui(ui: &mut egui::Ui, palette: &Palette, advice: &str, reason: &str) {
+    ui.add_space(6.0);
+    ui.horizontal_wrapped(|ui| {
+        ui.label(RichText::new("다음엔 이렇게").color(palette.caret));
+        ui.label(RichText::new(advice).color(palette.plain));
+    });
+    ui.label(RichText::new(reason).color(palette.dim));
 }
 
 fn key_name(key: char) -> String {
@@ -229,19 +247,34 @@ pub fn show(ctx: &egui::Context, palette: &Palette, summary: &Summary<'_>) -> Op
             );
         });
         ui.add_space(8.0);
-        let counts = format!(
+        let mut counts = format!(
             "걸린 시간 {} · 누른 글쇠 {}개 · 틀린 글쇠 {}개",
             span(total.seconds),
             total.presses,
             total.wrong
         );
+        if total.wrong > 0 {
+            counts += &format!(" · 고치는 데 {}", span(summary.repair_seconds));
+        }
         ui.label(RichText::new(counts).color(palette.dim));
+        if let Some((advice, reason)) = &summary.counsel {
+            counsel_ui(ui, palette, advice, reason);
+        }
 
         ui.separator();
-        lines_ui(ui, palette, summary);
-        ui.add_space(4.0);
-        misses_ui(ui, palette, &summary.misses);
-        slips_ui(ui, palette, summary);
+        // 창이 작으면 문장별 기록과 틀린 자리가 화면을 넘는다. 이 부분만 내려 볼 수 있게 해서
+        // 큰 숫자와 조언, 단추는 늘 보이게 한다.
+        let above = ui.cursor().top() - ui.min_rect().top();
+        let room = ctx.content_rect().height() - 2.0 * EDGE - above - BUTTON_ROW;
+        egui::ScrollArea::vertical()
+            .auto_shrink([false, true])
+            .max_height(room.max(BUTTON_ROW))
+            .show(ui, |ui| {
+                lines_ui(ui, palette, summary);
+                ui.add_space(4.0);
+                misses_ui(ui, palette, &summary.misses);
+                slips_ui(ui, palette, summary);
+            });
         ui.separator();
 
         ui.horizontal(|ui| {

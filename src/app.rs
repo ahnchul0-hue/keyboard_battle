@@ -7,6 +7,7 @@
 use std::time::Duration;
 
 use eframe::egui::{self, Align, Event, Key, Layout, RichText};
+use keyboard_battle::coach::{self, Advice, Ledger, Review};
 use keyboard_battle::measure::Tally;
 use keyboard_battle::player::Player;
 use keyboard_battle::round::Round;
@@ -54,6 +55,10 @@ pub struct PracticeApp {
     pointer_travel: f32,
     /// 이번 실행에서 끝낸 과정들의 기록.
     history: Vec<Tally>,
+    /// 이번 실행에서 끝낸 과정들을 글쇠별로 모은 것. 버릇이 된 실수를 찾는 데 쓴다.
+    ledger: Ledger,
+    /// 방금 끝낸 과정을 되짚어 본 것과, 다음에 바꿔 볼 한 가지. 결과 창이 떠 있는 동안 있다.
+    look_back: Option<(Review, Advice)>,
     /// 방금 친 과정을 되감아 보이는 중이면 그 장치. 이 동안에는 화면이 이쪽의 과정을 보여 준다.
     player: Option<Player>,
     stats: InputStats,
@@ -82,6 +87,8 @@ impl PracticeApp {
             typed_at: None,
             pointer_travel: 0.0,
             history: Vec::new(),
+            ledger: Ledger::default(),
+            look_back: None,
             player: None,
             stats: InputStats::default(),
             show_recent: false,
@@ -157,6 +164,7 @@ impl PracticeApp {
                     if self.round.is_finished() {
                         self.finished_at = Some(now);
                         self.typed_at = None;
+                        self.review();
                     }
                 }
                 Event::Text(text) => self.stats.log(format!("Text {text:?}")),
@@ -192,6 +200,14 @@ impl PracticeApp {
         }
     }
 
+    /// 방금 끝낸 과정을 되짚어, 결과 창에 적을 조언을 정한다. 과정을 끝낼 때 한 번만 부른다.
+    fn review(&mut self) {
+        let review = Review::of(&self.round);
+        self.ledger.add(&self.round, &review);
+        let advice = coach::advise(&self.round, &review, &self.ledger);
+        self.look_back = Some((review, advice));
+    }
+
     /// 결과 창에서 고른 대로 한다.
     fn choose(&mut self, choice: Choice, now: f64) {
         match choice {
@@ -210,6 +226,7 @@ impl PracticeApp {
                 self.round = Round::new(lines);
                 self.finished_at = None;
                 self.passed_at = None;
+                self.look_back = None;
             }
         }
     }
@@ -269,6 +286,8 @@ impl PracticeApp {
     }
 
     fn summary(&self, now: f64) -> Summary<'_> {
+        let total: Tally = self.round.results().iter().copied().sum();
+        let look_back = self.look_back.as_ref();
         Summary {
             number: self.number + 1,
             lines: self.round.lines(),
@@ -277,6 +296,8 @@ impl PracticeApp {
             best: self.history.iter().map(Tally::per_minute).reduce(f64::max),
             misses: self.round.misses(),
             slips: self.round.slips(),
+            repair_seconds: look_back.map_or(0.0, |(review, _)| review.repair_seconds),
+            counsel: look_back.map(|(review, advice)| advice.words(&total, review)),
             age: self
                 .finished_at
                 .map_or(0.0, |finished_at| now - finished_at),
@@ -795,6 +816,28 @@ mod tests {
         let mut app = PracticeApp::new(Deck::in_order());
         let done = type_round(&mut app, 0.0);
         assert!(!app.focusing(done));
+    }
+
+    /// 과정을 끝내면 되짚어 본 것이 결과 창에 실리고, 다음 과정으로 넘어가면 치운다.
+    #[test]
+    fn finishing_a_round_brings_advice_until_the_next_round() {
+        let mut app = PracticeApp::new(Deck::in_order());
+        assert!(app.summary(0.0).counsel.is_none());
+        let done = type_round(&mut app, 0.0);
+        let summary = app.summary(done);
+        // 틀리지 않고 고르게 쳤으므로 속도를 올려 보라고 권한다.
+        let (advice, _) = summary.counsel.expect("과정을 끝내면 조언이 있다");
+        assert!(advice.ends_with("타/분을 노려 보세요."), "{advice}");
+        assert_eq!(summary.repair_seconds, 0.0);
+        // 글쇠별 기록은 과정을 끝낼 때 한 번만 더한다.
+        let needed = app.ledger.key('ㅏ').needed;
+        assert!(needed > 0);
+        app.summary(done + 1.0);
+        assert_eq!(app.ledger.key('ㅏ').needed, needed);
+
+        app.handle_events(&named(Key::Enter), done + RESULT_GRACE);
+        assert!(app.look_back.is_none());
+        assert!(app.summary(done + 2.0).counsel.is_none());
     }
 
     #[test]

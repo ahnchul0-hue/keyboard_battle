@@ -15,6 +15,78 @@ const HANGUL_KEYS: &str = "qwertyuiopasdfghjklzxcvbnm";
 const HANGUL_PLAIN: &str = "ㅂㅈㄷㄱㅅㅛㅕㅑㅐㅔㅁㄴㅇㄹㅎㅗㅓㅏㅣㅋㅌㅊㅍㅠㅜㅡ";
 const HANGUL_SHIFTED: &str = "ㅃㅉㄸㄲㅆㅛㅕㅑㅒㅖㅁㄴㅇㄹㅎㅗㅓㅏㅣㅋㅌㅊㅍㅠㅜㅡ";
 
+/// 손.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Hand {
+    Left,
+    Right,
+}
+
+impl Hand {
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Left => "왼손",
+            Self::Right => "오른손",
+        }
+    }
+}
+
+/// 손가락.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Finger {
+    Pinky,
+    Ring,
+    Middle,
+    Index,
+    Thumb,
+}
+
+impl Finger {
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Pinky => "새끼손가락",
+            Self::Ring => "약손가락",
+            Self::Middle => "가운뎃손가락",
+            Self::Index => "집게손가락",
+            Self::Thumb => "엄지손가락",
+        }
+    }
+}
+
+/// 자판의 줄.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Row {
+    Number,
+    Top,
+    Home,
+    Bottom,
+    Space,
+}
+
+impl Row {
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Number => "숫자 줄",
+            Self::Top => "윗줄",
+            Self::Home => "가운데 줄",
+            Self::Bottom => "아랫줄",
+            Self::Space => "맨 아랫줄",
+        }
+    }
+}
+
+/// 표준 운지법에서 손가락마다 맡는 글쇠. 왼손 새끼손가락부터 오른손 새끼손가락까지다.
+const REACH: [(Hand, Finger, &str); 8] = [
+    (Hand::Left, Finger::Pinky, "`1qaz"),
+    (Hand::Left, Finger::Ring, "2wsx"),
+    (Hand::Left, Finger::Middle, "3edc"),
+    (Hand::Left, Finger::Index, "45rtfgvb"),
+    (Hand::Right, Finger::Index, "67yuhjnm"),
+    (Hand::Right, Finger::Middle, "8ik,"),
+    (Hand::Right, Finger::Ring, "9ol."),
+    (Hand::Right, Finger::Pinky, "0-=p[]\\;'/"),
+];
+
 /// 글쇠 위치. 값은 [`PLAIN`] 안에서의 순서다.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct KeyPos(u8);
@@ -29,6 +101,26 @@ impl KeyPos {
     /// 모든 문자 글쇠.
     pub fn all() -> impl Iterator<Item = Self> {
         (0..PLAIN.len() as u8).map(Self)
+    }
+}
+
+/// 표준 운지법에서 이 글쇠를 치는 손과 손가락. 사이띄개는 어느 쪽 엄지로든 치므로 손이 없다.
+pub fn finger(pos: KeyPos) -> (Option<Hand>, Finger) {
+    let legend = qwerty(pos, false);
+    let reach = REACH.iter().find(|(_, _, keys)| keys.contains(legend));
+    reach.map_or((None, Finger::Thumb), |&(hand, finger, _)| {
+        (Some(hand), finger)
+    })
+}
+
+/// 이 글쇠가 놓인 줄.
+pub fn row(pos: KeyPos) -> Row {
+    match pos.0 {
+        0..=12 => Row::Number,
+        13..=25 => Row::Top,
+        26..=36 => Row::Home,
+        37..=46 => Row::Bottom,
+        _ => Row::Space,
     }
 }
 
@@ -83,6 +175,48 @@ mod tests {
         assert_eq!(qwerty(key(' '), true), ' ');
         assert_eq!(KeyPos::from_us('A'), None);
         assert_eq!(KeyPos::from_us('한'), None);
+    }
+
+    /// 문자 글쇠는 저마다 손가락 하나가 맡고, 사이띄개만 엄지가 맡는다.
+    #[test]
+    fn every_key_belongs_to_one_finger() {
+        let assigned: String = REACH.iter().map(|(_, _, keys)| *keys).collect();
+        let mut sorted: Vec<char> = assigned.chars().collect();
+        sorted.sort_unstable();
+        sorted.dedup();
+        assert_eq!(
+            sorted.len(),
+            assigned.chars().count(),
+            "두 손가락이 맡은 글쇠"
+        );
+        assert_eq!(sorted.len(), 47);
+
+        assert_eq!(finger(key('f')), (Some(Hand::Left), Finger::Index));
+        assert_eq!(finger(key('j')), (Some(Hand::Right), Finger::Index));
+        assert_eq!(finger(key('a')), (Some(Hand::Left), Finger::Pinky));
+        assert_eq!(finger(key(';')), (Some(Hand::Right), Finger::Pinky));
+        assert_eq!(finger(key('c')), (Some(Hand::Left), Finger::Middle));
+        assert_eq!(finger(key('\\')), (Some(Hand::Right), Finger::Pinky));
+        assert_eq!(finger(key(' ')), (None, Finger::Thumb));
+        for pos in KeyPos::all().filter(|&pos| pos != key(' ')) {
+            assert!(finger(pos).0.is_some(), "{:?}", qwerty(pos, false));
+        }
+    }
+
+    #[test]
+    fn rows_follow_the_keyboard() {
+        let rows = [
+            ("`1234567890-=", Row::Number),
+            ("qwertyuiop[]\\", Row::Top),
+            ("asdfghjkl;'", Row::Home),
+            ("zxcvbnm,./", Row::Bottom),
+            (" ", Row::Space),
+        ];
+        for (keys, expected) in rows {
+            for legend in keys.chars() {
+                assert_eq!(row(key(legend)), expected, "{legend:?}");
+            }
+        }
     }
 
     #[test]
