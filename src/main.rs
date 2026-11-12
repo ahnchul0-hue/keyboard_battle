@@ -4,6 +4,7 @@
 mod app;
 mod input;
 mod result;
+mod settings;
 mod theme;
 mod view;
 

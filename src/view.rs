@@ -12,6 +12,7 @@ use keyboard_battle::measure::Tally;
 use keyboard_battle::texts::Sentence;
 use keyboard_battle::typed::TypedText;
 
+use crate::settings::Marker;
 use crate::theme::Palette;
 
 /// 블럭을 그리는 데 드는 것들.
@@ -19,6 +20,8 @@ pub struct Look<'a> {
     pub palette: &'a Palette,
     /// 문장 글자의 크기.
     pub size: f32,
+    /// 지금 칠 낱말을 알려 주는 방식.
+    pub marker: Marker,
 }
 
 /// 블럭 하나가 놓인 처지.
@@ -60,27 +63,34 @@ pub fn current_word(text: &str, typed: usize) -> Range<usize> {
     start..start + length
 }
 
-/// 칠 문장. `word`(글자 번호 범위)에는 밑줄을 그어, 눈이 따라갈 자리를 알려 준다.
+/// 칠 문장. `word`(글자 번호 범위)가 있으면 그 낱말을 설정에 따른 방식으로 표시해,
+/// 눈이 따라갈 자리를 알려 준다.
 fn target_job(
     text: &str,
-    word: Range<usize>,
-    size: f32,
+    word: Option<Range<usize>>,
     color: Color32,
-    mark: Color32,
+    look: &Look<'_>,
 ) -> LayoutJob {
+    let (palette, size) = (look.palette, look.size);
+    let plain = typing_format(size, color, None);
+    let marked = match look.marker {
+        Marker::Underline => typing_format(size, color, Some(palette.caret)),
+        Marker::Block => TextFormat {
+            background: palette.caret,
+            ..typing_format(size, palette.card, None)
+        },
+        Marker::None => plain.clone(),
+    };
     let byte = |index: usize| {
         let found = text.char_indices().nth(index);
         found.map_or(text.len(), |(at, _)| at)
     };
+    let word = word.unwrap_or(0..0);
     let (start, end) = (byte(word.start), byte(word.end));
     let mut job = LayoutJob::default();
-    job.append(&text[..start], 0.0, typing_format(size, color, None));
-    job.append(
-        &text[start..end],
-        0.0,
-        typing_format(size, color, Some(mark)),
-    );
-    job.append(&text[end..], 0.0, typing_format(size, color, None));
+    job.append(&text[..start], 0.0, plain.clone());
+    job.append(&text[start..end], 0.0, marked);
+    job.append(&text[end..], 0.0, plain);
     job
 }
 
@@ -174,18 +184,14 @@ pub fn card(
         });
 
         let width = ui.available_width();
-        let (word, color, mark) = match stage {
+        let (word, color) = match stage {
             Stage::Current(typed) => {
                 let word = current_word(line.text, typed.done().chars().count());
-                (word, palette.plain, palette.caret)
+                (Some(word), palette.plain)
             }
-            _ => (0..0, palette.dim, palette.dim),
+            _ => (None, palette.dim),
         };
-        let target = layout(
-            ui,
-            target_job(line.text, word, look.size, color, mark),
-            width,
-        );
+        let target = layout(ui, target_job(line.text, word, color, look), width);
         let (spot, _) = ui.allocate_exact_size(target.size(), Sense::hover());
         let height = spot.height();
         ui.painter().galley(spot.min, target, color);
@@ -232,11 +238,57 @@ mod tests {
         assert_eq!(current_word("", 0), 0..0);
     }
 
+    fn job(word: Option<Range<usize>>, marker: Marker) -> LayoutJob {
+        let palette = Palette::of(egui::Theme::Dark);
+        let look = Look {
+            palette: &palette,
+            size: 24.0,
+            marker,
+        };
+        target_job("가는 말이 곱다.", word, Color32::WHITE, &look)
+    }
+
     #[test]
     fn target_job_keeps_the_whole_sentence() {
-        for word in [0..0, 0..2, 3..5, 6..9] {
-            let job = target_job("가는 말이 곱다.", word, 24.0, Color32::WHITE, Color32::RED);
-            assert_eq!(job.text, "가는 말이 곱다.");
+        for word in [None, Some(0..0), Some(0..2), Some(3..5), Some(6..9)] {
+            for marker in [Marker::Underline, Marker::Block, Marker::None] {
+                assert_eq!(job(word.clone(), marker).text, "가는 말이 곱다.");
+            }
+        }
+    }
+
+    /// 표시는 지금 칠 낱말에만 붙고, 방식은 설정을 따른다.
+    #[test]
+    fn the_current_word_is_marked_the_chosen_way() {
+        let palette = Palette::of(egui::Theme::Dark);
+        // "가는 말이 곱다."에서 '말'은 일곱째 바이트에서, '가'는 첫 바이트에서 시작한다.
+        let format_at = |marker, byte: usize| {
+            let job = job(Some(3..5), marker);
+            let holds = |section: &&egui::text::LayoutSection| {
+                (section.byte_range.start.0..section.byte_range.end.0).contains(&byte)
+            };
+            let section = job.sections.iter().find(holds).expect("문장 안의 자리");
+            section.format.clone()
+        };
+
+        let underlined = format_at(Marker::Underline, 7);
+        assert_eq!(underlined.underline.color, palette.caret);
+        assert_eq!(underlined.background, Color32::TRANSPARENT);
+
+        let block = format_at(Marker::Block, 7);
+        assert_eq!(
+            (block.background, block.color),
+            (palette.caret, palette.card)
+        );
+
+        let none = format_at(Marker::None, 7);
+        assert_eq!(none.underline, Stroke::NONE);
+        assert_eq!(none.background, Color32::TRANSPARENT);
+
+        for marker in [Marker::Underline, Marker::Block, Marker::None] {
+            let rest = format_at(marker, 0);
+            assert_eq!(rest.underline, Stroke::NONE);
+            assert_eq!(rest.background, Color32::TRANSPARENT);
         }
     }
 }

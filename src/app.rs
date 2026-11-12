@@ -13,6 +13,7 @@ use keyboard_battle::texts;
 
 use crate::input::{InputStats, key_pos};
 use crate::result::{self, Choice, Summary, clock};
+use crate::settings::{self, Settings};
 use crate::theme::{self, Palette};
 use crate::view::{self, Look, Stage};
 
@@ -40,6 +41,8 @@ pub struct PracticeApp {
     history: Vec<Tally>,
     stats: InputStats,
     show_recent: bool,
+    settings: Settings,
+    show_settings: bool,
     /// 이번 화면 갱신에 글쇠가 눌렸는지. 눌렸으면 지금 칠 블럭이 보이는 곳으로 화면을 옮긴다.
     follow: bool,
     /// 위쪽에 보여 주는 지금까지의 기록과, 그것을 적은 시각(초)·그때 끝낸 문장 수.
@@ -60,6 +63,8 @@ impl Default for PracticeApp {
             history: Vec::new(),
             stats: InputStats::default(),
             show_recent: false,
+            settings: Settings::default(),
+            show_settings: false,
             follow: false,
             live: Tally::default(),
             live_at: f64::NEG_INFINITY,
@@ -304,12 +309,22 @@ impl PracticeApp {
     }
 
     /// 제목, 화면 밝기, 진행 상황. 창이 작아도 늘 보이는 곳에 둔다.
-    fn header_ui(&self, ui: &mut egui::Ui, palette: &Palette) {
+    fn header_ui(&mut self, ui: &mut egui::Ui, palette: &Palette) {
         ui.horizontal(|ui| {
             let title = RichText::new("키보드 배틀").heading();
             ui.label(title.color(palette.plain));
-            ui.with_layout(Layout::right_to_left(Align::Center), theme::switcher);
+            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                ui.toggle_value(&mut self.show_settings, "설정");
+                ui.separator();
+                theme::switcher(ui);
+            });
         });
+        if self.show_settings {
+            egui::Frame::group(ui.style()).show(ui, |ui| {
+                ui.set_width(ui.available_width());
+                settings::ui(ui, palette, &mut self.settings);
+            });
+        }
         ui.add_space(6.0);
         self.progress_ui(ui, palette);
         ui.add_space(10.0);
@@ -320,6 +335,7 @@ impl PracticeApp {
         let look = Look {
             palette,
             size: TYPING_FONT_SIZE,
+            marker: self.settings.marker,
         };
         for index in 0..self.round.lines().len() {
             self.card_ui(ui, &look, index, now);
