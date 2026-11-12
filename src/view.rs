@@ -5,14 +5,15 @@ use std::sync::Arc;
 
 use eframe::egui::text::{CCursor, LayoutJob};
 use eframe::egui::{
-    self, Align, Color32, FontId, Galley, Layout, Rect, RichText, Sense, Stroke, StrokeKind,
+    self, Align, Color32, FontId, Galley, Layout, Pos2, Rect, RichText, Sense, Stroke, StrokeKind,
     TextFormat,
 };
 use keyboard_battle::measure::Tally;
+use keyboard_battle::overlay::{self, Cell, State};
 use keyboard_battle::texts::Sentence;
 use keyboard_battle::typed::TypedText;
 
-use crate::settings::Marker;
+use crate::settings::{Echo, Marker};
 use crate::theme::Palette;
 
 /// 블럭을 그리는 데 드는 것들.
@@ -22,6 +23,8 @@ pub struct Look<'a> {
     pub size: f32,
     /// 지금 칠 낱말을 알려 주는 방식.
     pub marker: Marker,
+    /// 친 글을 보여 주는 자리.
+    pub echo: Echo,
 }
 
 /// 블럭 하나가 놓인 처지.
@@ -63,6 +66,19 @@ pub fn current_word(text: &str, typed: usize) -> Range<usize> {
     start..start + length
 }
 
+/// 지금 칠 낱말의 글자 모양. 표시하는 방식은 설정을 따른다.
+fn marked_format(color: Color32, look: &Look<'_>) -> TextFormat {
+    let (palette, size) = (look.palette, look.size);
+    match look.marker {
+        Marker::Underline => typing_format(size, color, Some(palette.caret)),
+        Marker::Block => TextFormat {
+            background: palette.caret,
+            ..typing_format(size, palette.card, None)
+        },
+        Marker::None => typing_format(size, color, None),
+    }
+}
+
 /// 칠 문장. `word`(글자 번호 범위)가 있으면 그 낱말을 설정에 따른 방식으로 표시해,
 /// 눈이 따라갈 자리를 알려 준다.
 fn target_job(
@@ -71,16 +87,8 @@ fn target_job(
     color: Color32,
     look: &Look<'_>,
 ) -> LayoutJob {
-    let (palette, size) = (look.palette, look.size);
-    let plain = typing_format(size, color, None);
-    let marked = match look.marker {
-        Marker::Underline => typing_format(size, color, Some(palette.caret)),
-        Marker::Block => TextFormat {
-            background: palette.caret,
-            ..typing_format(size, palette.card, None)
-        },
-        Marker::None => plain.clone(),
-    };
+    let plain = typing_format(look.size, color, None);
+    let marked = marked_format(color, look);
     let byte = |index: usize| {
         let found = text.char_indices().nth(index);
         found.map_or(text.len(), |(at, _)| at)
@@ -122,17 +130,51 @@ fn layout(ui: &egui::Ui, mut job: LayoutJob, width: f32) -> Arc<Galley> {
     ui.painter().layout_job(job)
 }
 
+/// `origin`에 놓인 글의 `index`번째 글자 앞에 커서를 세운다.
+fn paint_caret(ui: &egui::Ui, origin: Pos2, galley: &Galley, index: usize, palette: &Palette) {
+    let spot = galley.pos_from_cursor(CCursor::new(index));
+    let caret = Rect::from_min_size(origin + spot.min.to_vec2(), egui::vec2(2.0, spot.height()));
+    ui.painter().rect_filled(caret, 0.0, palette.caret);
+}
+
 /// 친 글을 `row` 자리에 그린다. 조합 중인 글자는 밑줄이 커서 노릇을 하므로,
 /// 그 밖일 때만 글 끝에 커서를 세운다.
 fn paint_typed(ui: &egui::Ui, row: Rect, typed: &TypedText, target: &str, look: &Look<'_>) {
     let galley = layout(ui, typed_job(typed, target, look), row.width());
     if typed.composing().is_none() {
-        let end = galley.pos_from_cursor(CCursor::new(typed.done().chars().count()));
-        let top = row.min + end.min.to_vec2();
-        let caret = Rect::from_min_size(top, egui::vec2(2.0, end.height()));
-        ui.painter().rect_filled(caret, 0.0, look.palette.caret);
+        let end = typed.done().chars().count();
+        paint_caret(ui, row.min, &galley, end, look.palette);
     }
     ui.painter().galley(row.min, galley, look.palette.plain);
+}
+
+/// 칠 문장 위에 친 글을 겹친 줄과, 커서를 세울 자리(글자 번호).
+/// 조합 중인 글자가 있으면 그 밑줄이 커서 노릇을 하므로 자리를 돌려주지 않는다.
+fn overlay_job(target: &str, typed: &TypedText, look: &Look<'_>) -> (LayoutJob, Option<usize>) {
+    let (palette, size) = (look.palette, look.size);
+    let cells = overlay::cells(target, typed);
+    let is_ahead = |cell: &Cell| matches!(cell.state, State::Todo | State::Composing);
+    let at = cells.iter().position(is_ahead).unwrap_or(cells.len());
+    let composing = cells
+        .get(at)
+        .is_some_and(|cell| cell.state == State::Composing);
+    let word = current_word(target, at);
+
+    let mut job = LayoutJob::default();
+    for (index, cell) in cells.iter().enumerate() {
+        let format = match cell.state {
+            State::Right => typing_format(size, palette.good, None),
+            State::Wrong => typing_format(size, palette.bad, Some(palette.bad)),
+            State::Composing => typing_format(size, palette.plain, Some(palette.plain)),
+            // 아직 치지 않은 글자 가운데 지금 칠 낱말에 든 것에는 표시를 붙인다.
+            State::Todo if word.contains(&index) => marked_format(palette.plain, look),
+            State::Todo => typing_format(size, palette.plain, None),
+        };
+        job.append(cell.ch.encode_utf8(&mut [0; 4]), 0.0, format);
+    }
+    // 문장을 다 채운 뒤에도 커서가 설 자리로 빈칸을 하나 둔다.
+    job.append(" ", 0.0, typing_format(size, palette.plain, None));
+    (job, (!composing).then_some(at))
 }
 
 /// 문장 하나를 담은 블럭.
@@ -184,23 +226,39 @@ pub fn card(
         });
 
         let width = ui.available_width();
-        let (word, color) = match stage {
-            Stage::Current(typed) => {
-                let word = current_word(line.text, typed.done().chars().count());
-                (Some(word), palette.plain)
+        match (stage, look.echo) {
+            // 친 글을 칠 문장 위에 겹친다. 줄이 하나뿐이라 블럭 높이가 달라질 일이 없다.
+            (Stage::Current(typed), Echo::Over) => {
+                let (job, caret) = overlay_job(line.text, typed, look);
+                let galley = layout(ui, job, width);
+                let (spot, _) = ui.allocate_exact_size(galley.size(), Sense::hover());
+                if let Some(index) = caret {
+                    paint_caret(ui, spot.min, &galley, index, palette);
+                }
+                ui.painter().galley(spot.min, galley, palette.plain);
             }
-            _ => (None, palette.dim),
-        };
-        let target = layout(ui, target_job(line.text, word, color, look), width);
-        let (spot, _) = ui.allocate_exact_size(target.size(), Sense::hover());
-        let height = spot.height();
-        ui.painter().galley(spot.min, target, color);
-
-        // 친 글이 놓일 줄. 지금 칠 블럭이 아니어도 칠 문장과 같은 높이를 비워 두어,
-        // 문장이 넘어갈 때 블럭이 위아래로 움직이지 않게 한다.
-        let (row, _) = ui.allocate_exact_size(egui::vec2(width, height), Sense::hover());
-        if let Stage::Current(typed) = stage {
-            paint_typed(ui, row, typed, line.text, look);
+            _ => {
+                let (word, color) = match stage {
+                    Stage::Current(typed) => {
+                        let word = current_word(line.text, typed.done().chars().count());
+                        (Some(word), palette.plain)
+                    }
+                    _ => (None, palette.dim),
+                };
+                let target = layout(ui, target_job(line.text, word, color, look), width);
+                let (spot, _) = ui.allocate_exact_size(target.size(), Sense::hover());
+                let height = spot.height();
+                ui.painter().galley(spot.min, target, color);
+                if look.echo == Echo::Below {
+                    // 친 글이 놓일 줄. 지금 칠 블럭이 아니어도 칠 문장과 같은 높이를 비워 두어,
+                    // 문장이 넘어갈 때 블럭이 위아래로 움직이지 않게 한다.
+                    let size = egui::vec2(width, height);
+                    let (row, _) = ui.allocate_exact_size(size, Sense::hover());
+                    if let Stage::Current(typed) = stage {
+                        paint_typed(ui, row, typed, line.text, look);
+                    }
+                }
+            }
         }
     });
     shown.response
@@ -244,6 +302,7 @@ mod tests {
             palette: &palette,
             size: 24.0,
             marker,
+            echo: Echo::Below,
         };
         target_job("가는 말이 곱다.", word, Color32::WHITE, &look)
     }

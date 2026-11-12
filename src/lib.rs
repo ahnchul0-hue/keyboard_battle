@@ -3,6 +3,7 @@
 pub mod hangul;
 pub mod keymap;
 pub mod measure;
+pub mod overlay;
 pub mod round;
 pub mod texts;
 pub mod typed;

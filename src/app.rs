@@ -336,6 +336,7 @@ impl PracticeApp {
             palette,
             size: TYPING_FONT_SIZE,
             marker: self.settings.marker,
+            echo: self.settings.echo,
         };
         for index in 0..self.round.lines().len() {
             self.card_ui(ui, &look, index, now);

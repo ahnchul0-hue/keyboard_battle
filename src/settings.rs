@@ -18,9 +18,20 @@ pub enum Marker {
     None,
 }
 
+/// 친 글을 보여 주는 자리.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Echo {
+    /// 칠 문장 아래 줄에 따로 보인다.
+    #[default]
+    Below,
+    /// 칠 문장 위에 겹쳐, 친 글자에 색을 입힌다.
+    Over,
+}
+
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Settings {
     pub marker: Marker,
+    pub echo: Echo,
 }
 
 /// 선택지 한 줄: 이름과, 그 가운데 하나를 고르는 단추들.
@@ -51,5 +62,12 @@ pub fn ui(ui: &mut egui::Ui, palette: &Palette, settings: &mut Settings) {
             (Marker::Block, "바탕"),
             (Marker::None, "표시 없음"),
         ],
+    );
+    choice(
+        ui,
+        palette,
+        "친 글",
+        &mut settings.echo,
+        &[(Echo::Below, "아래 줄에"), (Echo::Over, "문장 위에 겹쳐")],
     );
 }
