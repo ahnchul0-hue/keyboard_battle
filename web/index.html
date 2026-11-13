@@ -5,20 +5,28 @@
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>키보드 배틀</title>
     <style>
+      :root {
+        --ground: #1b1b1b;
+        --quiet: #a0a0a0;
+        --alarm: #ff7878;
+        --line: #787878;
+      }
+      @media (prefers-color-scheme: light) {
+        :root {
+          --ground: #f8f8f8;
+          --quiet: #5f5f5f;
+          --alarm: #c81e1e;
+          --line: #828282;
+        }
+      }
       html,
       body {
         height: 100%;
         margin: 0;
         overflow: hidden;
-        background: #1b1b1b;
+        background: var(--ground);
       }
-      @media (prefers-color-scheme: light) {
-        html,
-        body {
-          background: #f8f8f8;
-        }
-      }
-      /* 가장 긴 문장이 한 줄에 들어오려면 화면 너비가 620px은 되어야 한다.
+      /* 러스트 코드 한 줄이 넘어가지 않으려면 화면 너비가 620px은 되어야 한다.
          그보다 좁은 창에서는 화면을 더 줄이지 않고 옆으로 밀어 보게 한다. */
       #frame {
         height: 100%;
@@ -34,11 +42,32 @@
       }
       #note {
         position: absolute;
-        inset: 40% 0 auto;
-        margin: 0;
+        inset: 36% 0 auto;
+        margin: 0 auto;
+        max-width: 640px;
+        padding: 12px 20px;
         text-align: center;
-        font: 16px sans-serif;
-        color: #a0a0a0;
+        font: 16px/1.6 sans-serif;
+        color: var(--quiet);
+        overflow-wrap: anywhere;
+      }
+      /* 떠 있던 화면 위에 적힐 수도 있으므로 바탕을 깐다. */
+      #note.failed {
+        color: var(--alarm);
+        background: var(--ground);
+        border: 1px solid var(--line);
+        border-radius: 6px;
+      }
+      #note button {
+        margin-top: 10px;
+        font: inherit;
+      }
+      #note textarea {
+        display: block;
+        box-sizing: border-box;
+        width: 100%;
+        margin-top: 10px;
+        font: 13px/1.4 monospace;
       }
     </style>
   </head>
@@ -46,13 +75,12 @@
     <div id="frame">
       <canvas id="screen"></canvas>
     </div>
-    <p id="note">불러오는 중…</p>
-    <script type="module">
-      import init from "./keyboard_battle.js";
-
-      init().catch((error) => {
-        document.getElementById("note").textContent = `화면을 열지 못했습니다: ${error}`;
-      });
+    <!-- 스크립트가 돌기 시작하면 이 문구부터 바뀐다. 그대로 남아 있으면 스크립트가 돌지 못한 것이다. -->
+    <p id="note" role="status">스크립트를 기다리는 중…</p>
+    <script>
+      // 빌드할 때 web/build.sh가 채운다.
+      window.KEYBOARD_BATTLE = { build: "__BUILD__", wasmBytes: Number("__WASM_BYTES__") || 0 };
     </script>
+    <script src="boot.js"></script>
   </body>
 </html>

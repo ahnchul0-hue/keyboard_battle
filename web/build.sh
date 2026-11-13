@@ -13,11 +13,17 @@ fi
 
 cargo build --profile web --target wasm32-unknown-unknown
 rm -rf target/web-dist
-wasm-bindgen --target web --no-typescript \
+# 모듈을 쓰지 않는 스크립트로 낸다. 페이지를 가둬 두는 틀 가운데에는 모듈 스크립트를 받지 못하는 것이 있다.
+wasm-bindgen --target no-modules --no-typescript \
   --remove-name-section --remove-producers-section \
   --out-dir target/web-dist \
   target/wasm32-unknown-unknown/web/keyboard_battle.wasm
-cp web/index.html target/web-dist/
+
+# 어느 빌드가 떠 있는지 페이지가 알 수 있게, 커밋과 만든 때, 프로그램 파일의 크기를 적어 넣는다.
+build="$(git rev-parse --short HEAD 2>/dev/null || echo 커밋-모름) $(date -u +%Y-%m-%dT%H:%MZ)"
+bytes=$(wc -c <target/web-dist/keyboard_battle_bg.wasm | tr -d ' ')
+sed -e "s/__BUILD__/$build/" -e "s/__WASM_BYTES__/$bytes/" web/index.html >target/web-dist/index.html
+cp web/boot.js target/web-dist/
 
 echo "target/web-dist 에 만들었습니다."
 echo "열어 보려면: python3 -m http.server --directory target/web-dist"

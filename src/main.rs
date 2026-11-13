@@ -112,27 +112,84 @@ fn main() {
     }
 }
 
-/// 브라우저에서는 `web/index.html`의 canvas에 화면을 그린다.
+/// 페이지에 지금 형편을 알린다. 페이지가 `keyboardBattleStatus(kind, text)`를 두었으면 그것을 부른다.
+/// 알릴 곳이 있었으면 `true`.
+#[cfg(target_arch = "wasm32")]
+fn tell_page(kind: &str, text: &str) -> bool {
+    use eframe::wasm_bindgen::{JsCast as _, JsValue};
+    use eframe::web_sys::{self, js_sys};
+
+    let Some(window) = web_sys::window() else {
+        return false;
+    };
+    let hook = js_sys::Reflect::get(&window, &JsValue::from_str("keyboardBattleStatus"));
+    let Some(hook) = hook
+        .ok()
+        .and_then(|hook| hook.dyn_into::<js_sys::Function>().ok())
+    else {
+        return false;
+    };
+    let (kind, text) = (JsValue::from_str(kind), JsValue::from_str(text));
+    hook.call2(&JsValue::NULL, &kind, &text).is_ok()
+}
+
+/// 브라우저에서 화면을 그리는 방법.
+///
+/// WebGPU가 되는 브라우저에서는 그것부터 쓰는 것이 기본값이지만, WebGPU는 브라우저와 그래픽 장치에 따라
+/// 되는 정도가 달라서 어떤 PC에서는 화면이 아예 열리지 않는다. 이 프로그램은 글자와 네모만 그리므로
+/// 어디서나 되는 WebGL만 쓴다.
+#[cfg(target_arch = "wasm32")]
+fn web_options() -> eframe::WebOptions {
+    use eframe::egui_wgpu::WgpuSetup;
+
+    let mut options = eframe::WebOptions::default();
+    if let WgpuSetup::CreateNew(setup) = &mut options.wgpu_options.wgpu_setup {
+        setup.instance_descriptor.backends = eframe::wgpu::Backends::GL;
+    }
+    options
+}
+
+/// 브라우저에서는 페이지의 canvas(`id="screen"`)에 화면을 그린다.
+///
+/// 어디까지 됐는지는 페이지에 알린다(`started`, `failed`, `panic`). 페이지가 그것을 받아
+/// 불러오는 중이라는 안내를 지우거나, 열지 못한 까닭을 적는다.
 #[cfg(target_arch = "wasm32")]
 fn main() {
     use eframe::wasm_bindgen::JsCast as _;
     use eframe::web_sys;
 
+    // 프로그램이 멈추면 그 까닭을 페이지에 남긴다. 그러지 않으면 멈춘 화면만 남는다.
+    let earlier = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |panic| {
+        tell_page("panic", &panic.to_string());
+        earlier(panic);
+    }));
+
     wasm_bindgen_futures::spawn_local(async {
         let document = web_sys::window().and_then(|window| window.document());
         let element = |id: &str| document.as_ref().and_then(|d| d.get_element_by_id(id));
         let canvas = element("screen")
-            .and_then(|canvas| canvas.dyn_into::<web_sys::HtmlCanvasElement>().ok())
-            .expect("index.html에 id가 screen인 canvas가 있다");
+            .and_then(|canvas| canvas.dyn_into::<web_sys::HtmlCanvasElement>().ok());
+        let Some(canvas) = canvas else {
+            tell_page("failed", "페이지에 id가 screen인 canvas가 없습니다");
+            return;
+        };
 
         let started = eframe::WebRunner::new()
             .start(
                 canvas,
-                eframe::WebOptions::default(),
+                web_options(),
                 Box::new(|creation| Ok(create_app(creation))),
             )
             .await;
-        // 불러오는 중이라는 안내를 지우거나, 못 열었으면 그 까닭으로 바꾼다.
+        let told = match &started {
+            Ok(()) => tell_page("started", ""),
+            Err(error) => tell_page("failed", &format!("{error:?}")),
+        };
+        if told {
+            return;
+        }
+        // 형편을 받는 곳이 없는 페이지에서는 안내 문구를 직접 고친다.
         if let Some(note) = element("note") {
             match started {
                 Ok(()) => note.remove(),
