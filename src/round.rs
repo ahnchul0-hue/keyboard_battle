@@ -1,5 +1,6 @@
-//! 과정 하나: 문장 몇 개를 차례로 치고 기록을 남긴다.
+//! 과정 하나: 문장을 차례로 치고 기록을 남긴다.
 //!
+//! 문장 수가 정해진 과정도 있고(둘러보기), 시간이 다 될 때까지 문장을 이어 붙이는 과정도 있다(연습).
 //! 문장은 끝까지 정확히 쳐야 다음으로 넘어간다. 틀린 글쇠는 지우고 다시 쳐야 하며,
 //! 그렇게 누른 글쇠는 모두 정확도에 반영된다. 지우개(Backspace)는 세지 않는다.
 
@@ -66,6 +67,20 @@ impl Round {
         &self.lines
     }
 
+    /// 칠 문장을 뒤에 더 붙인다. 시간을 정해 치는 연습에서 문장이 떨어지지 않게 하는 데 쓴다.
+    pub fn extend(&mut self, lines: Vec<Sentence>) {
+        let was_finished = self.is_finished();
+        let keys = |line: &Sentence| key_units(line.text).len() as u32;
+        self.needed += lines.iter().map(keys).sum::<u32>();
+        self.slips
+            .resize(self.slips.len() + lines.len(), BTreeSet::new());
+        self.lines.extend(lines);
+        if was_finished {
+            let next = self.current().map(|line| key_units(line.text));
+            self.target = next.unwrap_or_default();
+        }
+    }
+
     /// 끝낸 문장들의 기록. 문장 순서와 같다.
     pub fn results(&self) -> &[Tally] {
         &self.done
@@ -88,6 +103,11 @@ impl Round {
     /// 지금 문장에서 문장과 어긋나지 않게 친 글쇠 수.
     fn matched(&self) -> usize {
         common_prefix(&key_units(&self.typed.text()), &self.target)
+    }
+
+    /// 지금 문장에서 어긋나지 않게 친 데까지의 글쇠들.
+    pub fn reached(&self) -> &[char] {
+        &self.target[..self.matched()]
     }
 
     /// 일 하나를 한다. `now`는 그 일이 일어난 시각(초)이다. 과정이 끝난 뒤의 일은 버린다.
@@ -179,22 +199,28 @@ impl Round {
         self.started_at.is_some()
     }
 
-    /// 지금까지의 기록. 치고 있는 문장은 어긋나지 않게 친 데까지만 넣는다.
+    /// 치고 있는 문장의 지금까지 기록. 어긋나지 않게 친 데까지만 넣는다.
+    /// 그 문장의 첫 글쇠를 아직 누르지 않았으면 `None`.
+    pub fn in_progress(&self, now: f64) -> Option<Tally> {
+        let started_at = self.started_at?;
+        let line = self.current()?;
+        let matched = self.matched();
+        // 다 친 글자 수는, 다음에 칠 글쇠가 든 글자의 번호와 같다.
+        let chars = char_of_unit(line.text, matched).unwrap_or(line.text.chars().count());
+        Some(Tally {
+            needed: matched as u32,
+            chars: chars as u32,
+            presses: self.presses,
+            wrong: self.wrong,
+            timed: (matched as u32).saturating_sub(1),
+            seconds: now - started_at,
+        })
+    }
+
+    /// 지금까지의 기록: 끝낸 문장들에 치고 있는 문장을 더한 것.
     pub fn so_far(&self, now: f64) -> Tally {
         let finished: Tally = self.done.iter().copied().sum();
-        let Some(started_at) = self.started_at else {
-            return finished;
-        };
-        let matched = self.matched() as u32;
-        finished
-            + Tally {
-                needed: matched,
-                chars: 0,
-                presses: self.presses,
-                wrong: self.wrong,
-                timed: matched.saturating_sub(1),
-                seconds: now - started_at,
-            }
+        finished + self.in_progress(now).unwrap_or_default()
     }
 
     /// 과정 전체에서 얼마나 쳤는지 (0 ~ 1).
@@ -392,6 +418,45 @@ mod tests {
         let now = round.so_far(12.0);
         assert_eq!((now.needed, now.presses, now.seconds), (3, 3, 3.0));
         assert_eq!(round.progress(), 0.75);
+    }
+
+    /// 문장을 이어 붙이면 과정이 끝나지 않고 계속된다. 이미 끝난 과정에 붙여도 이어서 칠 수 있다.
+    #[test]
+    fn more_lines_can_be_added_while_typing() {
+        let mut round = round(&[(Kind::English, "ab")]);
+        press_all(&mut round, "a", 0.0);
+        let more = |text| Sentence {
+            kind: Kind::English,
+            text,
+        };
+        round.extend(vec![more("cd")]);
+        assert_eq!(round.lines().len(), 2);
+        assert_eq!(round.progress(), 0.25);
+        press_all(&mut round, "bcd", 1.0);
+        assert!(round.is_finished());
+
+        round.extend(vec![more("xy")]);
+        assert!(!round.is_finished());
+        // 붙인 문장에서 틀린 자리도 적힌다.
+        press_all(&mut round, "xz", 10.0);
+        assert_eq!(round.slips().len(), 3);
+        assert_eq!(round.slips()[2].iter().copied().collect::<Vec<_>>(), [1]);
+        assert_eq!(round.results().len(), 2);
+    }
+
+    /// 치다 만 문장의 기록에는 어긋나지 않게 친 데까지만 든다.
+    #[test]
+    fn the_line_in_progress_counts_what_was_typed_right() {
+        let mut round = round(&[(Kind::Hangul, "가나다")]);
+        assert_eq!(round.in_progress(0.0), None, "첫 글쇠를 누르기 전");
+        // '가'와 '나'의 닿소리까지 치고, 홀소리를 틀린다.
+        press_all(&mut round, "ㄱㅏㄴㅓ", 0.0);
+        let partial = round.in_progress(5.0).expect("치는 중");
+        assert_eq!((partial.needed, partial.presses, partial.wrong), (3, 4, 1));
+        assert_eq!(partial.chars, 1, "다 친 글자는 '가' 하나다");
+        assert_eq!((partial.timed, partial.seconds), (2, 5.0));
+        assert_eq!(round.reached(), ['ㄱ', 'ㅏ', 'ㄴ']);
+        assert_eq!(round.so_far(5.0), partial);
     }
 
     #[test]

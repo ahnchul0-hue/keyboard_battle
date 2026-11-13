@@ -49,6 +49,12 @@ erase() {
   done
 }
 
+# 연습 시간을 묻는 화면에서 1분을 넣는다. 그냥 Enter를 누르면 3분이지만 시연으로는 길다.
+xdotool key 1
+sleep 0.8
+xdotool key Return
+sleep 0.8
+
 # 다람쥐 헌 쳇바퀴에 타고파 — '쳇'의 첫소리를 틀렸다가 고친다. 조합 중인 글자는 낱자씩 지워진다.
 keys 'ekfkawnl gjs '
 keys 'wp'
@@ -68,25 +74,28 @@ sleep 0.1
 keys 'own fox jumps over the lazy dog.'
 sleep 0.3
 keys 'let v: Vec<u8> = vec![1, 2]; println!("{:?}", &v);'
+sleep 0.3
+# 가는 말이 고와야 오는 말이 곱다. / 낮말은 새가 듣고 밤말은 쥐가 듣는다.
+keys 'rksms akfdl rhdhkdi dhsms akfdl rhqek.'
+keys 'skwakfdms tork emerh qkaakfdms wnlrk emesmsek.'
+keys 'A journey of a thousand miles begins with a single step.'
+# 이 줄을 치는 도중에 1분이 다 된다. 그 뒤에 이어서 친 글쇠는 프로그램이 받지 않는다.
+keys 'fn add(a: i32, b: i32) ->'
 
 # 결과 창을 보고, 다시 보기를 잠깐 보다가 그만둔다.
-sleep 4.2
+sleep 4.0
 xdotool key v
-sleep 4.6
+sleep 4.0
 xdotool key Escape
 sleep 1.4
 
-# 다음 과정: 가는 말이 고와야 오…
-xdotool key Return
-sleep 1.0
-keys 'rksms akfdl rhdhkdi dh'
-sleep 0.5
-
-# 오른쪽 위의 "밝게"를 눌러 밝은 화면으로 바꾼다.
+# 시간 바꾸기로 돌아가서, 오른쪽 위의 "밝게"를 눌러 밝은 화면으로 바꾼다.
+xdotool key t
+sleep 1.2
 xdotool mousemove 657 22 click 1
 sleep 0.2
 xdotool mousemove 600 680
-sleep 2.6
+sleep 2.4
 
 kill -INT "$recorder"
 wait "$recorder" 2>/dev/null || true

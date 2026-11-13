@@ -154,9 +154,11 @@ pub struct Ledger {
 }
 
 impl Ledger {
-    /// 끝낸 과정 하나를 더한다.
+    /// 친 과정 하나를 더한다. 시간이 다 되어 문장을 치다 말았으면 친 데까지만 센다.
     pub fn add(&mut self, round: &Round, review: &Review) {
-        for unit in round.lines().iter().flat_map(|line| key_units(line.text)) {
+        let finished = &round.lines()[..round.results().len()];
+        let typed = finished.iter().flat_map(|line| key_units(line.text));
+        for unit in typed.chain(round.reached().iter().copied()) {
             self.keys.entry(unit).or_default().needed += 1;
         }
         for (key, count) in round.misses() {
@@ -200,13 +202,13 @@ pub enum Advice {
     Steady,
 }
 
-/// 방금 끝낸 `round`에 대해 권할 한 가지를 고른다. `ledger`에는 이 과정까지 더해 둔다.
+/// 방금 친 `round`에 대해 권할 한 가지를 고른다. `total`은 그 과정 전체의 기록이고,
+/// `ledger`에는 이 과정까지 더해 둔다.
 ///
 /// 틀린 글쇠가 많으면 다른 것은 접어 두고 속도부터 늦춘다. 그렇지 않으면 이번에도 틀린 글쇠 가운데
 /// 버릇이 된 것, 낱말 사이에서 멈추는 버릇, 머뭇거리는 글쇠를 차례로 짚는다.
 /// 짚을 것이 없고 정확하면 속도를 올린다.
-pub fn advise(round: &Round, review: &Review, ledger: &Ledger) -> Advice {
-    let total: Tally = round.results().iter().copied().sum();
+pub fn advise(total: &Tally, round: &Round, review: &Review, ledger: &Ledger) -> Advice {
     if total.accuracy() < CARELESS {
         return Advice::SlowDown;
     }
@@ -468,8 +470,34 @@ mod tests {
         assert!(round.is_finished());
         let review = Review::of(round);
         ledger.add(round, &review);
-        let advice = advise(round, &review, ledger);
+        let advice = advise(&total(round), round, &review, ledger);
         (review, advice)
+    }
+
+    /// 시간이 다 되어 문장을 치다 만 과정도 되짚을 수 있다. 치지 않은 문장은 셈에 넣지 않는다.
+    #[test]
+    fn an_unfinished_round_is_reviewed_up_to_where_it_stopped() {
+        let lines = [
+            (Kind::English, "ab"),
+            (Kind::English, "cde"),
+            (Kind::English, "zz"),
+        ];
+        let mut round = round(&lines);
+        play(&mut round, "ab", 0.0, 0.5);
+        // 둘째 문장은 c, d까지만 치고 멈춘다. 셋째 문장은 손도 대지 않는다.
+        play(&mut round, "cx<d", 10.0, 0.5);
+        let review = Review::of(&round);
+        let so_far = round.so_far(12.0);
+        assert_eq!((review.clean_keys, review.repair_seconds), (2, 1.0));
+
+        let mut ledger = Ledger::default();
+        ledger.add(&round, &review);
+        let needed = |key| ledger.key(key).needed;
+        assert_eq!((needed('a'), needed('c'), needed('d')), (1, 1, 1));
+        assert_eq!((needed('e'), needed('z')), (0, 0), "아직 치지 않은 글쇠");
+        // 치다 만 문장에서 누른 것까지 넣은 기록으로 조언을 고른다.
+        assert_eq!((so_far.presses, so_far.wrong), (5, 1));
+        assert_eq!(advise(&so_far, &round, &review, &ledger), Advice::SlowDown);
     }
 
     #[test]

@@ -66,11 +66,11 @@ pub fn tour(now: f64) -> Player {
     script.act(Action::Backspace, 0.5);
     script.keys("쳇바퀴에 타고파");
     script.say(
-        "문장을 끝내면 다음 블럭으로 넘어가고, 위쪽 막대가 차오릅니다.",
+        "문장을 끝내면 다음 문장으로 넘어갑니다. 시간이 다 될 때까지 문장이 이어집니다.",
         2.2,
     );
     script.keys("얘, 옛");
-    let last = "네 문장을 다 치면 결과 창이 뜹니다. 이제 직접 쳐 보세요.";
+    let last = "정한 시간이 다 되면 결과 창이 뜹니다. 이제 직접 쳐 보세요.";
     script.say(last, 2.4);
     // 마지막 설명을 읽을 시간을 벌어 둔다.
     script.say(last, 0.0);

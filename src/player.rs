@@ -75,6 +75,14 @@ impl Player {
         self.caption
     }
 
+    /// 할 일 가운데 얼마나 했는지 (0 ~ 1).
+    pub fn progress(&self) -> f32 {
+        if self.steps.is_empty() {
+            return 1.0;
+        }
+        self.next as f32 / self.steps.len() as f32
+    }
+
     /// 과정에 마지막으로 남긴 시각(초). 과정의 지금까지 기록을 낼 때 쓴다.
     pub fn clock(&self) -> f64 {
         self.clock
@@ -197,8 +205,10 @@ mod tests {
             (player.caption(), player.round().typed().text()),
             ("첫째", "o".to_owned())
         );
+        assert!((player.progress() - 2.0 / 3.0).abs() < 1e-6);
         player.advance(13.0);
         assert_eq!(player.caption(), "둘째");
+        assert_eq!(player.progress(), 1.0);
         assert!(player.is_over(13.0 + TAIL));
     }
 }
