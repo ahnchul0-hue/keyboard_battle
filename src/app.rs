@@ -100,17 +100,20 @@ struct LookBack {
     standing: Standing,
 }
 
+/// 기록이 하나도 없을 때의 견줄 것. 결과 창이 뜨기 전에 결과를 물으면 이것을 준다.
+static NO_STANDING: Standing = Standing::empty();
+
 /// 연습 시간을 고르는 화면에 적는, 지금까지의 기록 한 줄.
-fn record_line(standing: &Standing) -> String {
-    let (Some(previous), Some(fastest)) = (standing.previous, standing.fastest) else {
+fn record_line(records: &[Record]) -> String {
+    let Some(last) = records.last() else {
         return "끝까지 한 연습은 기록에 남아, 다음 연습의 결과와 견줘 볼 수 있습니다.".to_owned();
     };
     format!(
-        "지금까지 {}번 · 지난번 {:.0} 타/분, 정확도 {:.1}% · 가장 빨랐을 때 {:.0} 타/분",
-        standing.count,
-        previous.speed(),
-        previous.accuracy() * 100.0,
-        fastest.speed()
+        "지금까지 {}번 · 지난번은 {}분 연습, {:.0} 타/분, 정확도 {:.1}%",
+        records.len(),
+        last.minutes,
+        last.speed(),
+        last.accuracy() * 100.0
     )
 }
 
@@ -143,8 +146,6 @@ pub struct PracticeApp {
     pointer_travel: f32,
     /// 끝까지 한 연습들의 기록. 오래된 것부터다. 프로그램을 껐다 켜도 남는다.
     records: Vec<Record>,
-    /// 그 기록들에서 뽑은, 새 결과와 견줄 것들.
-    standing: Standing,
     /// 기록을 두는 곳.
     store: Store,
     /// 종료하기를 골랐는지. 창으로 연 프로그램은 닫히고, 브라우저에서는 처음 화면에 인사를 띄운다.
@@ -187,7 +188,6 @@ impl PracticeApp {
             presets_width: 260.0,
             typed_at: None,
             pointer_travel: 0.0,
-            standing: Standing::of(&records),
             records,
             store,
             farewell: false,
@@ -210,8 +210,12 @@ impl PracticeApp {
     /// 시간은 첫 글쇠를 누를 때부터 흐른다.
     fn begin(&mut self, minutes: u32, round: Option<Round>) {
         self.minutes = minutes;
-        let length = self.settings.length.keys();
-        self.round = round.unwrap_or_else(|| Round::new(self.deck.page(length)));
+        self.round = round.unwrap_or_else(|| {
+            // 새 글로 하는 연습은 늘 한글 문단으로 시작한다.
+            // 글의 차례가 연습마다 같아야 기록을 서로 견줄 수 있다.
+            self.deck.restart();
+            Round::new(self.deck.page(self.settings.length.keys()))
+        });
         self.top_up();
         self.choosing = None;
         self.started_at = None;
@@ -275,8 +279,8 @@ impl PracticeApp {
         self.ledger.add(&self.round, &review);
         let total = self.total(at);
         let advice = coach::advise(&total, &self.round, &review, &self.ledger);
-        // 견줄 것은 이번 연습을 넣기 전의 기록에서 뽑은 것이다.
-        let standing = self.standing.clone();
+        // 견줄 것은 이번 연습을 넣기 전의 기록에서, 연습 시간이 같은 것끼리 뽑는다.
+        let standing = Standing::of(&self.records, self.minutes);
         if self.started_at.is_some() && self.stopped_after(at).is_none() {
             let record = Record {
                 at: store::now(),
@@ -286,7 +290,6 @@ impl PracticeApp {
             };
             self.records.push(record);
             self.store.save(&record, &self.records);
-            self.standing = Standing::of(&self.records);
         }
         self.look_back = Some(LookBack {
             review,
@@ -560,7 +563,7 @@ impl PracticeApp {
             pages: round.pages_done(),
             // 친 것이 있는 종류만 보인다.
             kinds: kinds.filter(|(_, tally)| tally.presses > 0).collect(),
-            standing: look_back.map_or(&self.standing, |look_back| &look_back.standing),
+            standing: look_back.map_or(&NO_STANDING, |look_back| &look_back.standing),
             today: store::now(),
             trouble: self.store.trouble(),
             misses: round.misses(),
@@ -829,7 +832,7 @@ impl PracticeApp {
                 let bye = "연습을 마쳤습니다. 이 탭은 닫아도 됩니다.";
                 ui.label(RichText::new(bye).color(palette.plain));
             }
-            ui.label(RichText::new(record_line(&self.standing)).color(palette.dim));
+            ui.label(RichText::new(record_line(&self.records)).color(palette.dim));
             ui.add_space(22.0);
         });
         if let Some(minutes) = picked {
@@ -1374,6 +1377,9 @@ mod tests {
         assert_eq!((app.minutes, app.finished_at), (1, None));
         assert!(app.started_at.is_none() && app.round.log().is_empty());
         assert!(texts(&app).iter().all(|text| !typed_lines.contains(text)));
+        // 앞 연습이 러스트 차례에서 끝났어도, 새 연습은 다시 한글 문단부터다.
+        let kinds: Vec<Kind> = app.round.lines().iter().map(|line| line.kind).collect();
+        assert_eq!(kinds, [Kind::Hangul, Kind::English]);
     }
 
     /// 시간이 다 된 줄 모르고 이어서 친 글쇠로 결과 창이 닫히면 안 된다.
@@ -1598,7 +1604,7 @@ mod tests {
     #[test]
     fn a_practice_run_to_the_end_is_recorded_and_the_next_is_compared_with_it() {
         let mut app = practicing(1);
-        assert!(app.records.is_empty() && app.standing.previous.is_none());
+        assert!(app.records.is_empty());
         let end = type_until_time_is_up(&mut app, 0.0);
         assert_eq!(app.records.len(), 1);
         let first = app.records[0];
@@ -1611,9 +1617,8 @@ mod tests {
             (first.total.presses, first.total.needed, first.total.timed)
         );
         // 첫 결과에는 견줄 기록이 없다. 결과 창이 떠 있는 동안 이번 기록과 견주지는 않는다.
-        assert_eq!(summary.standing.count, 0);
+        assert_eq!(summary.standing.practices, 0);
         assert!(summary.standing.previous.is_none());
-        assert_eq!(app.standing.previous, Some(first));
 
         app.handle_events(&named(Key::Enter), end + 1.0);
         let end = type_until_time_is_up(&mut app, end + 2.0);
@@ -1621,30 +1626,44 @@ mod tests {
         let summary = app.summary(end);
         assert_eq!(summary.standing.previous, Some(first));
         assert_eq!(summary.standing.fastest, Some(first));
-        assert_eq!((summary.standing.count, summary.standing.minutes), (1, 1));
+        let standing = summary.standing;
+        assert_eq!(
+            (standing.practices, standing.alike, standing.minutes),
+            (1, 1, 1)
+        );
         // 0.1초에 한 글쇠씩 쳤다.
         assert!((first.speed() - 600.0).abs() < 5.0);
         assert_eq!(first.accuracy(), 1.0);
-        assert_eq!(app.standing.count, 2);
+
+        // 시간이 다른 연습과는 견주지 않는다. 글의 구성이 달라서다.
+        app.choose(Choice::ChangeTime, end + 1.0);
+        app.begin(2, None);
+        let end = type_until_time_is_up(&mut app, end + 2.0);
+        let standing = app.summary(end).standing;
+        assert_eq!((standing.practices, standing.alike), (2, 0));
+        assert!(standing.previous.is_none() && standing.trail.is_empty());
+        assert_eq!(app.records.len(), 3);
     }
 
     /// 켤 때 받은 지난 기록이 처음 화면과 첫 결과에 쓰인다.
     #[test]
     fn records_from_earlier_runs_are_there_from_the_start() {
         let app = fresh(Vec::new());
-        assert!(record_line(&app.standing).starts_with("끝까지 한 연습은 기록에 남아"));
+        assert!(record_line(&app.records).starts_with("끝까지 한 연습은 기록에 남아"));
 
         let mut earlier = practicing(1);
         type_until_time_is_up(&mut earlier, 0.0);
         let record = earlier.records[0];
         let mut app = fresh(vec![record, record]);
-        assert_eq!(app.standing.count, 2);
-        let line = record_line(&app.standing);
-        assert!(line.starts_with("지금까지 2번 · 지난번 6"), "{line}");
+        let line = record_line(&app.records);
+        assert!(
+            line.starts_with("지금까지 2번 · 지난번은 1분 연습, 6"),
+            "{line}"
+        );
 
         app.begin(1, None);
         let end = type_until_time_is_up(&mut app, 0.0);
-        assert_eq!(app.summary(end).standing.count, 2);
+        assert_eq!(app.summary(end).standing.alike, 2);
         assert_eq!(app.records.len(), 3);
     }
 
@@ -1671,7 +1690,7 @@ mod tests {
         assert!((spent - 1.9).abs() < 1e-9);
         assert_eq!((summary.pages, summary.total.presses), (0, 6));
         assert!(summary.counsel.is_some());
-        assert!(app.records.is_empty() && app.standing.count == 0);
+        assert!(app.records.is_empty());
     }
 
     /// 시간이 다 되기를 기다리며 손을 놓고 있던 동안은, 치다 만 글을 친 시간에 넣지 않는다.

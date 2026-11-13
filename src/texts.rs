@@ -359,6 +359,12 @@ impl Deck {
         }
     }
 
+    /// 쪽의 종류가 다시 처음(한글)부터 돌아가게 한다. 연습을 새로 시작할 때 부른다.
+    /// 연습마다 글의 차례가 같아야 기록을 서로 견줄 수 있다. 문장은 앞에서 낸 데서 이어서 나온다.
+    pub fn restart(&mut self) {
+        self.dealt = 0;
+    }
+
     /// 다음 쪽에 칠 글. 치는 글쇠가 `length`개를 채울 때까지 문장을 잇는다.
     /// 한글과 영문은 문장들을 한 문단으로 이은 글 하나이고, 러스트는 줄마다 따로 치는 코드 몇 줄이다.
     pub fn page(&mut self, length: usize) -> Vec<Sentence> {
@@ -452,6 +458,27 @@ mod tests {
                 assert_eq!(page.len() == 1, kind != Kind::Rust, "{kind:?}");
             }
         }
+    }
+
+    /// 차례를 처음으로 돌리면 다시 한글부터 나오되, 이미 낸 문장은 다시 내지 않는다.
+    #[test]
+    fn restarting_the_turns_begins_with_hangul_again_but_with_new_sentences() {
+        let mut deck = Deck::in_order();
+        let first = deck.page(PAGE_KEYS);
+        let english = deck.page(PAGE_KEYS);
+        assert_eq!(
+            (first[0].kind, english[0].kind),
+            (Kind::Hangul, Kind::English)
+        );
+        deck.restart();
+        let again = deck.page(PAGE_KEYS);
+        assert_eq!(again[0].kind, Kind::Hangul);
+        let seen = sentences(&first);
+        assert!(sentences(&again).iter().all(|text| !seen.contains(text)));
+        // 그다음은 영문이고, 앞의 영문 쪽이 끝난 데서 이어진다.
+        let next = deck.page(PAGE_KEYS);
+        assert_eq!(next[0].kind, Kind::English);
+        assert!(next[0].text.starts_with(ENGLISH[sentences(&english).len()]));
     }
 
     /// 한 쪽은 정한 길이가 찰 때까지 문장을 잇는다. 마지막 문장만큼만 넘친다.

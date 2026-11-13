@@ -388,26 +388,48 @@ fn counsel_ui(ui: &mut egui::Ui, palette: &Palette, advice: &str, reason: &str) 
     ui.label(RichText::new(reason).color(palette.dim));
 }
 
-/// 이번 결과를 지난번, 최근 평균, 최고 기록과 견준다.
+/// 견줄 기록이 없을 때 그 까닭을 적는 말. `minutes`는 이번 연습의 시간(분)이고,
+/// `others`는 시간이 다른 연습의 기록이 있는지, `saved`는 이번 연습을 기록에 남겼는지다.
+fn nothing_to_compare(minutes: u32, others: bool, saved: bool) -> String {
+    match (others, saved) {
+        (false, true) => {
+            "첫 기록을 남겼습니다. 다음 연습부터 이 기록과 견줘 보여 줍니다.".to_owned()
+        }
+        (false, false) => {
+            "아직 남은 기록이 없습니다. 정한 시간을 끝까지 채운 연습만 기록에 남습니다.".to_owned()
+        }
+        (true, true) => format!(
+            "{minutes}분 연습의 첫 기록을 남겼습니다. \
+             시간이 다른 연습은 치는 글의 구성이 달라서 견주지 않습니다."
+        ),
+        (true, false) => format!(
+            "{minutes}분 연습의 기록이 아직 없습니다. \
+             시간이 다른 연습은 치는 글의 구성이 달라서 견주지 않습니다."
+        ),
+    }
+}
+
+/// 이번 결과를 같은 시간으로 한 지난번, 최근 평균, 최고 기록과 견준다.
 fn compare_ui(ui: &mut egui::Ui, palette: &Palette, summary: &Summary<'_>) {
-    title(ui, "지난 기록과 견주기", palette.dim);
+    let name = format!("지난 기록과 견주기 · {}분 연습끼리", summary.minutes);
+    title(ui, &name, palette.dim);
     let dim = |text: String| RichText::new(text).color(palette.dim);
     let small = |text: String| RichText::new(text).small().color(palette.dim);
     let standing = summary.standing;
     let Some(previous) = standing.previous else {
-        let words = if summary.saved() {
-            "첫 기록을 남겼습니다. 다음 연습부터 이 기록과 견줘 보여 줍니다."
-        } else {
-            "아직 남은 기록이 없습니다. 정한 시간을 끝까지 채운 연습만 기록에 남습니다."
-        };
-        ui.label(dim(words.to_owned()));
+        let others = standing.practices > 0;
+        ui.label(dim(nothing_to_compare(
+            summary.minutes,
+            others,
+            summary.saved(),
+        )));
         return;
     };
     let total = summary.total;
     let (speed, accuracy) = (total.per_minute(), total.accuracy() * 100.0);
     let mut rows = vec![("지난번", previous.speed(), previous.accuracy())];
     // 기록이 하나뿐이면 평균도 최고도 그 기록이라 따로 적을 것이 없다.
-    if standing.count >= 2 {
+    if standing.alike >= 2 {
         if let Some(recent) = standing.recent {
             rows.push(("최근 평균", recent.speed, recent.accuracy));
         }
@@ -440,23 +462,19 @@ fn compare_ui(ui: &mut egui::Ui, palette: &Palette, summary: &Summary<'_>) {
             }
         });
     ui.add_space(4.0);
-    let mut notes = format!(
-        "지난번: {} {}분 연습",
-        ago(summary.today.saturating_sub(previous.at)),
-        previous.minutes
-    );
-    if let Some(recent) = standing.recent.filter(|_| standing.count >= 2) {
+    let mut notes = format!("지난번: {}", ago(summary.today.saturating_sub(previous.at)));
+    if let Some(recent) = standing.recent.filter(|_| standing.alike >= 2) {
         notes += &format!(" · 최근 평균: 지난 {}번", recent.count);
     }
     ui.label(small(notes));
-    let (count, minutes) = if summary.saved() {
-        let minutes = standing.minutes + u64::from(summary.minutes);
-        (standing.count + 1, minutes)
-    } else {
-        (standing.count, standing.minutes)
-    };
+    // 이번 연습을 기록에 남겼으면 그것까지 센다.
+    let this = usize::from(summary.saved());
+    let minutes = standing.minutes + u64::from(summary.minutes) * this as u64;
     ui.label(small(format!(
-        "이번까지 {count}번, 모두 {} 연습했습니다.",
+        "{}분 연습 {}번 · 모든 연습 {}번, {}",
+        summary.minutes,
+        standing.alike + this,
+        standing.practices + this,
         hours_minutes(minutes)
     )));
 }
@@ -586,12 +604,13 @@ fn header_ui(ui: &mut egui::Ui, palette: &Palette, summary: &Summary<'_>) {
             standing.cleanest.map(|best| best.accuracy()),
             total.accuracy(),
         );
-        let news = match (fastest, cleanest) {
-            (true, true) => "새 기록 · 지금까지 가장 빠르고 가장 정확합니다",
-            (true, false) => "새 기록 · 지금까지 가장 빠릅니다",
-            (false, true) => "새 기록 · 지금까지 가장 정확합니다",
+        let best = match (fastest, cleanest) {
+            (true, true) => "가장 빠르고 가장 정확합니다",
+            (true, false) => "가장 빠릅니다",
+            (false, true) => "가장 정확합니다",
             (false, false) => return,
         };
+        let news = format!("새 기록 · {}분 연습 가운데 {best}", summary.minutes);
         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
             ui.label(RichText::new(news).color(palette.good));
         });
@@ -796,6 +815,20 @@ mod tests {
     }
 
     #[test]
+    fn the_reason_for_having_nothing_to_compare_is_spelled_out() {
+        assert!(nothing_to_compare(3, false, true).starts_with("첫 기록을 남겼습니다"));
+        assert!(nothing_to_compare(3, false, false).starts_with("아직 남은 기록이 없습니다"));
+        assert!(nothing_to_compare(5, true, true).starts_with("5분 연습의 첫 기록을 남겼습니다"));
+        let unsaved = nothing_to_compare(5, true, false);
+        assert!(unsaved.starts_with("5분 연습의 기록이 아직 없습니다"));
+        assert!(unsaved.ends_with("견주지 않습니다."));
+        assert!(
+            !unsaved.contains("  "),
+            "줄을 이은 자리에 빈칸이 겹치지 않는다"
+        );
+    }
+
+    #[test]
     fn space_key_gets_a_readable_name() {
         assert_eq!(key_name(' '), "사이띄개");
         assert_eq!(key_name('ㅆ'), "ㅆ");
@@ -870,15 +903,20 @@ mod tests {
     #[test]
     fn the_result_window_draws_for_every_kind_of_history() {
         let none = Standing::default();
-        let one = Standing::of(&[record(99_000, 300, 6)]);
+        let one = Standing::of(&[record(99_000, 300, 6)], 3);
         let many: Vec<Record> = (0..30)
             .map(|n| record(n * 3000, 280 + 3 * n as u32, n as u32 % 7))
             .collect();
-        let many = Standing::of(&many);
+        // 시간이 다른 연습의 기록만 있는 때.
+        let other = Standing::of(&[record(99_000, 300, 6)], 5);
+        assert!(other.practices == 1 && other.previous.is_none());
+        let many = Standing::of(&many, 3);
         let cases = [
             summary(&none, None),
             summary(&none, Some(42.0)),
             summary(&one, None),
+            summary(&other, None),
+            summary(&other, Some(42.0)),
             summary(&many, None),
             summary(&many, Some(42.0)),
         ];
