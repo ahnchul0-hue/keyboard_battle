@@ -2,6 +2,7 @@
 //!
 //! 예부터 전해 오는 속담과 글귀, 그리고 이 프로그램을 위해 새로 쓴 문장과 코드만 싣는다.
 
+use crate::measure::key_units;
 use crate::typed::Script;
 
 /// 문장 하나의 가장 긴 길이(칸). 영문·숫자·기호는 한 칸, 한글은 두 칸을 차지한다.
@@ -17,6 +18,9 @@ pub enum Kind {
 }
 
 impl Kind {
+    /// 모든 종류. 연습에서 돌아가며 나오는 순서이자, 기록에 적는 순서다.
+    pub const ALL: [Self; 3] = [Self::Hangul, Self::English, Self::Rust];
+
     pub fn name(self) -> &'static str {
         match self {
             Self::Hangul => "한글",
@@ -43,10 +47,18 @@ impl Kind {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+/// 한 번에 이어서 치는 글. 속담 하나일 수도 있고, 여러 문장을 이은 문단일 수도 있다.
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Sentence {
     pub kind: Kind,
-    pub text: &'static str,
+    pub text: String,
+}
+
+impl Sentence {
+    pub fn new(kind: Kind, text: impl Into<String>) -> Self {
+        let text = text.into();
+        Self { kind, text }
+    }
 }
 
 /// 처음 두 문장은 닿소리 열네 개와 겹낱자·쌍자음을 고루 쳐 보게 한다.
@@ -114,7 +126,7 @@ const HANGUL: [&str; 60] = [
     "옷깃만 스쳐도 인연이다.",
 ];
 
-const ENGLISH: [&str; 30] = [
+const ENGLISH: [&str; 50] = [
     "The quick brown fox jumps over the lazy dog.",
     "A journey of a thousand miles begins with a single step.",
     "Actions speak louder than words.",
@@ -145,9 +157,29 @@ const ENGLISH: [&str; 30] = [
     "Time and tide wait for no man.",
     "Fortune favors the bold.",
     "When in doubt, leave it out.",
+    "Birds of a feather flock together.",
+    "A watched pot never boils.",
+    "Do not count your chickens before they hatch.",
+    "Every cloud has a silver lining.",
+    "All that glitters is not gold.",
+    "Practice what you preach.",
+    "The squeaky wheel gets the grease.",
+    "Do not put all your eggs in one basket.",
+    "A picture is worth a thousand words.",
+    "Necessity is the mother of invention.",
+    "Out of sight, out of mind.",
+    "Easy come, easy go.",
+    "Great minds think alike.",
+    "A penny saved is a penny earned.",
+    "The best things in life are free.",
+    "Jackdaws love my big sphinx of quartz.",
+    "Waltz, bad nymph, for quick jigs vex.",
+    "Curiosity killed the cat.",
+    "Knowledge is power.",
+    "Better safe than sorry.",
 ];
 
-const RUST: [&str; 30] = [
+const RUST: [&str; 50] = [
     "let v: Vec<u8> = vec![1, 2]; println!(\"{:?}\", &v);",
     "fn add(a: i32, b: i32) -> i32 { a + b }",
     "let name = String::from(\"ferris\");",
@@ -178,22 +210,48 @@ const RUST: [&str; 30] = [
     "#[test] fn it_adds() { assert_eq!(add(2, 2), 4); }",
     "loop { if tries >= 3 { break; } tries += 1; }",
     "let key = format!(\"{}/{}\", user.id, path.display());",
+    "let mut buf = Vec::with_capacity(1024);",
+    "impl From<u8> for Level { fn from(n: u8) -> Self { Level(n) } }",
+    "let words: Vec<&str> = line.split_whitespace().collect();",
+    "if count % 2 == 0 && !done { continue; }",
+    "let (left, right) = slice.split_at(mid);",
+    "struct Stack<T> { items: Vec<T>, limit: usize }",
+    "fn area(&self) -> f64 { self.w * self.h }",
+    "let found = list.iter().position(|&x| x == key);",
+    "pub trait Shape { fn area(&self) -> f64; }",
+    "let label = if ok { \"pass\" } else { \"fail\" };",
+    "let sum: i32 = (1..=100).sum();",
+    "match rx.recv() { Ok(msg) => handle(msg), Err(_) => break }",
+    "let upper = name.to_uppercase();",
+    "let max = *scores.iter().max().unwrap_or(&0);",
+    "type Result<T> = std::result::Result<T, Error>;",
+    "let pairs: Vec<(usize, char)> = text.char_indices().collect();",
+    "fn is_even(n: u32) -> bool { n % 2 == 0 }",
+    "let path = dir.join(\"notes\").with_extension(\"txt\");",
+    "self.count = self.count.saturating_add(1);",
+    "let id: u32 = args.get(1)?.parse().ok()?;",
 ];
 
-/// 과정 하나에 내는 문장: 종류와 그 수. 이 순서대로 친다.
-const HAND: [(Kind, usize); 3] = [(Kind::Hangul, 2), (Kind::English, 1), (Kind::Rust, 1)];
+/// 쪽의 종류가 돌아가는 차례. 한 쪽은 한 종류의 글로만 채운다.
+/// 문장마다 한글과 영문을 오가면 그때마다 손과 머리가 자판을 바꿔 타야 해서 흐름이 끊긴다.
+const ROTATION: [Kind; 3] = Kind::ALL;
+
+/// 한 쪽에 이어서 치는 글의 길이(글쇠 수). 1분에 350타로 45초쯤 걸린다.
+/// 문장을 하나씩 내면 몇 초마다 끊기므로, 이만큼이 찰 때까지 문장을 잇는다.
+pub const PAGE_KEYS: usize = 260;
 
 /// 실린 문장 모두.
 pub fn all() -> impl Iterator<Item = Sentence> {
-    HAND.into_iter().flat_map(|(kind, _)| {
-        let sentence = move |&text| Sentence { kind, text };
+    ROTATION.into_iter().flat_map(|kind| {
+        let sentence = move |&text| Sentence::new(kind, text);
         kind.pool().iter().map(sentence)
     })
 }
 
-/// 늘 같은 첫 과정. 둘러보기처럼 정해진 문장이 필요할 때 쓴다.
-pub fn opening() -> Vec<Sentence> {
-    Deck::in_order().deal()
+/// 늘 같은 처음 두 쪽. 둘러보기처럼 정해진 글이 필요할 때 쓴다.
+pub fn opening() -> [Vec<Sentence>; 2] {
+    let mut deck = Deck::in_order();
+    [deck.page(PAGE_KEYS), deck.page(PAGE_KEYS)]
 }
 
 /// 문장을 섞는 데 쓰는 작은 난수 발생기 (SplitMix64).
@@ -231,6 +289,8 @@ struct Bag {
     order: Vec<usize>,
     /// 다음에 낼 차례.
     next: usize,
+    /// 바로 앞 쪽과 지금 채우는 쪽에 낸 문장들. 다시 섞을 때 이들이 곧바로 또 나오지 않게 한다.
+    recent: Vec<usize>,
 }
 
 impl Bag {
@@ -239,38 +299,34 @@ impl Bag {
             kind,
             order: (0..kind.pool().len()).collect(),
             next: 0,
+            recent: Vec::new(),
         }
     }
 
-    /// 다음 문장. 한 바퀴를 다 돌았으면 `rng`로 다시 섞되,
-    /// 방금 낸 `recent`개가 새 바퀴의 맨 앞에 또 나오지는 않게 한다.
-    fn draw(&mut self, rng: Option<&mut Rng>, recent: usize) -> Sentence {
+    /// 다음 문장. 한 바퀴를 다 돌았으면 `rng`로 다시 섞되, 방금 낸 문장들은 뒤로 돌린다.
+    fn draw(&mut self, rng: Option<&mut Rng>) -> &'static str {
         if self.next == self.order.len() {
             self.next = 0;
             if let Some(rng) = rng {
-                let fresh = self.order.len().saturating_sub(recent);
-                let just_dealt = self.order[fresh..].to_vec();
                 rng.shuffle(&mut self.order);
-                for front in 0..recent.min(fresh) {
-                    let is_new = |&at: &usize| !just_dealt.contains(&self.order[at]);
-                    if !is_new(&front)
-                        && let Some(other) = (recent..self.order.len()).find(is_new)
-                    {
-                        self.order.swap(front, other);
-                    }
-                }
+                let recent = &self.recent;
+                self.order.sort_by_key(|item| recent.contains(item));
             }
         }
-        let text = self.kind.pool()[self.order[self.next]];
+        let item = self.order[self.next];
         self.next += 1;
-        Sentence {
-            kind: self.kind,
-            text,
-        }
+        self.recent.push(item);
+        self.kind.pool()[item]
+    }
+
+    /// 쪽 하나를 다 채웠음을 알린다. 그 쪽에 낸 `drawn`개만 방금 낸 것으로 남긴다.
+    fn turn_page(&mut self, drawn: usize) {
+        let older = self.recent.len().saturating_sub(drawn);
+        self.recent.drain(..older);
     }
 }
 
-/// 과정마다 문장을 골라 주는 곳.
+/// 쪽마다 칠 글을 골라 주는 곳.
 ///
 /// 종류마다 문장을 섞어 두고 차례로 내므로, 실린 문장을 다 칠 때까지 같은 문장이 다시 나오지 않는다.
 #[derive(Clone, Debug)]
@@ -278,6 +334,8 @@ pub struct Deck {
     bags: [Bag; 3],
     /// 섞는 데 쓰는 난수. 없으면 실린 순서대로 낸다.
     rng: Option<Rng>,
+    /// 지금까지 낸 쪽 수. 다음 쪽의 종류를 정한다.
+    dealt: usize,
 }
 
 impl Deck {
@@ -292,23 +350,36 @@ impl Deck {
         deck
     }
 
-    /// 섞지 않고 실린 순서대로 내는 묶음. 시연이나 확인처럼 늘 같은 문장이 필요할 때 쓴다.
+    /// 섞지 않고 실린 순서대로 내는 묶음. 시연이나 확인처럼 늘 같은 글이 필요할 때 쓴다.
     pub fn in_order() -> Self {
         Self {
-            bags: HAND.map(|(kind, _)| Bag::new(kind)),
+            bags: ROTATION.map(Bag::new),
             rng: None,
+            dealt: 0,
         }
     }
 
-    /// 다음 과정의 문장들: 한글 둘, 영문 하나, 러스트 하나.
-    pub fn deal(&mut self) -> Vec<Sentence> {
-        let mut lines = Vec::new();
-        for (bag, (_, count)) in self.bags.iter_mut().zip(HAND) {
-            for _ in 0..count {
-                lines.push(bag.draw(self.rng.as_mut(), count));
-            }
+    /// 다음 쪽에 칠 글. 치는 글쇠가 `length`개를 채울 때까지 문장을 잇는다.
+    /// 한글과 영문은 문장들을 한 문단으로 이은 글 하나이고, 러스트는 줄마다 따로 치는 코드 몇 줄이다.
+    pub fn page(&mut self, length: usize) -> Vec<Sentence> {
+        let turn = self.dealt % ROTATION.len();
+        self.dealt += 1;
+        let (kind, bag) = (ROTATION[turn], &mut self.bags[turn]);
+        let mut texts = Vec::new();
+        let mut keys = 0;
+        while keys < length {
+            let text = bag.draw(self.rng.as_mut());
+            // 문장 사이에 치는 빈칸까지 센다.
+            keys += key_units(text).len() + 1;
+            texts.push(text);
         }
-        lines
+        bag.turn_page(texts.len());
+        if kind == Kind::Rust {
+            let line = |text| Sentence::new(kind, text);
+            texts.into_iter().map(line).collect()
+        } else {
+            vec![Sentence::new(kind, texts.join(" "))]
+        }
     }
 }
 
@@ -318,14 +389,21 @@ mod tests {
 
     use super::*;
     use crate::keymap::keystroke_for;
-    use crate::measure::key_units;
     use crate::typed::TypedText;
 
-    /// 실린 문장을 한 번씩 다 치는 데 걸리는 과정 수.
-    const CYCLE: usize = 30;
-
-    fn texts(lines: &[Sentence]) -> Vec<&'static str> {
-        lines.iter().map(|line| line.text).collect()
+    /// 쪽에 든 문장들. 문단으로 이은 글은 다시 문장으로 가른다.
+    fn sentences(page: &[Sentence]) -> Vec<&'static str> {
+        let kind = page[0].kind;
+        let joined: Vec<&str> = page.iter().map(|line| line.text.as_str()).collect();
+        let joined = joined.join(" ");
+        // 긴 문장부터 찾아야, 다른 문장의 앞머리인 짧은 문장을 잘못 집지 않는다.
+        let mut found: Vec<(usize, &'static str)> = kind
+            .pool()
+            .iter()
+            .filter_map(|&text| joined.find(text).map(|at| (at, text)))
+            .collect();
+        found.sort_unstable();
+        found.into_iter().map(|(_, text)| text).collect()
     }
 
     /// 실린 문장은 모두 이 프로그램의 자판으로 끝까지 칠 수 있어야 한다.
@@ -333,7 +411,7 @@ mod tests {
     fn every_sentence_can_be_typed() {
         for sentence in all() {
             let mut typed = TypedText::default();
-            for unit in key_units(sentence.text) {
+            for unit in key_units(&sentence.text) {
                 let (pos, shift) = keystroke_for(unit)
                     .unwrap_or_else(|| panic!("칠 수 없는 문자 {unit:?}: {}", sentence.text));
                 typed.press(pos, shift, sentence.kind.script());
@@ -344,9 +422,9 @@ mod tests {
 
     #[test]
     fn no_sentence_is_listed_twice() {
-        let listed: Vec<&str> = all().map(|sentence| sentence.text).collect();
-        assert_eq!(listed.len(), 4 * CYCLE);
-        let distinct: BTreeSet<&str> = listed.iter().copied().collect();
+        let listed: Vec<String> = all().map(|sentence| sentence.text).collect();
+        assert_eq!(listed.len(), HANGUL.len() + ENGLISH.len() + RUST.len());
+        let distinct: BTreeSet<&String> = listed.iter().collect();
         assert_eq!(distinct.len(), listed.len(), "같은 문장이 두 번 실려 있다");
     }
 
@@ -362,80 +440,114 @@ mod tests {
         }
     }
 
+    /// 쪽은 한글, 영문, 러스트의 차례로 돌아가고, 한 쪽은 한 종류로만 채운다.
     #[test]
-    fn a_round_is_two_hangul_one_english_one_rust() {
-        let kinds = |lines: Vec<Sentence>| lines.iter().map(|s| s.kind).collect::<Vec<_>>();
-        let expected = [Kind::Hangul, Kind::Hangul, Kind::English, Kind::Rust];
-        assert_eq!(kinds(Deck::in_order().deal()), expected);
-        assert_eq!(kinds(Deck::shuffled(7).deal()), expected);
+    fn pages_take_turns_by_kind() {
+        for mut deck in [Deck::in_order(), Deck::shuffled(7)] {
+            for turn in 0..9 {
+                let page = deck.page(PAGE_KEYS);
+                let kind = ROTATION[turn % 3];
+                assert!(page.iter().all(|line| line.kind == kind));
+                // 한글과 영문은 문단 하나로 잇고, 러스트는 줄마다 따로 친다.
+                assert_eq!(page.len() == 1, kind != Kind::Rust, "{kind:?}");
+            }
+        }
+    }
+
+    /// 한 쪽은 정한 길이가 찰 때까지 문장을 잇는다. 마지막 문장만큼만 넘친다.
+    #[test]
+    fn a_page_is_long_enough_to_type_without_a_break() {
+        let mut deck = Deck::shuffled(3);
+        for _ in 0..30 {
+            let page = deck.page(PAGE_KEYS);
+            let keys: usize = page.iter().map(|line| key_units(&line.text).len()).sum();
+            assert!(keys >= PAGE_KEYS - sentences(&page).len(), "{keys}타");
+            assert!(keys < PAGE_KEYS + 80, "{keys}타");
+            assert!(sentences(&page).len() >= 3);
+        }
     }
 
     /// 섞지 않으면 실린 순서대로 나오고, 다 내고 나면 처음으로 돌아간다.
     #[test]
     fn an_unshuffled_deck_deals_in_the_listed_order() {
         let mut deck = Deck::in_order();
-        let first = deck.deal();
-        assert_eq!(
-            texts(&first),
-            [HANGUL[0], HANGUL[1], ENGLISH[0], RUST[0]],
-            "둘러보기와 시연이 기대하는 첫 과정"
+        let first = deck.page(PAGE_KEYS);
+        let listed = sentences(&first);
+        assert_eq!(listed, HANGUL[..listed.len()]);
+        assert!(
+            first[0]
+                .text
+                .starts_with("다람쥐 헌 쳇바퀴에 타고파 얘, 옛"),
+            "둘러보기와 시연이 기대하는 첫 글"
         );
-        assert_eq!(first, opening());
-        assert_eq!(
-            texts(&deck.deal()),
-            [HANGUL[2], HANGUL[3], ENGLISH[1], RUST[1]]
+        let english = deck.page(PAGE_KEYS);
+        assert_eq!([first, english.clone()], opening());
+        assert!(english[0].text.starts_with(ENGLISH[0]));
+        let rust: Vec<String> = deck
+            .page(PAGE_KEYS)
+            .into_iter()
+            .map(|line| line.text)
+            .collect();
+        assert_eq!(rust, RUST[..rust.len()]);
+        // 다음 한글 쪽은 앞 쪽이 끝난 데서 이어진다.
+        assert!(
+            deck.page(PAGE_KEYS)[0]
+                .text
+                .starts_with(HANGUL[listed.len()])
         );
-        for _ in 2..CYCLE {
-            deck.deal();
-        }
-        assert_eq!(deck.deal(), first);
     }
 
-    /// 섞은 묶음은 한 바퀴 동안 실린 문장을 빠짐없이 한 번씩 낸다.
+    /// 섞은 묶음은 한 바퀴 동안 실린 문장을 한 번씩만 낸다.
     #[test]
-    fn a_shuffled_deck_deals_every_sentence_once_per_cycle() {
+    fn a_shuffled_deck_does_not_repeat_until_the_pool_runs_out() {
         let mut deck = Deck::shuffled(2026);
-        for _ in 0..3 {
-            let dealt: Vec<&str> = (0..CYCLE).flat_map(|_| texts(&deck.deal())).collect();
-            let distinct: BTreeSet<&str> = dealt.iter().copied().collect();
-            assert_eq!((dealt.len(), distinct.len()), (4 * CYCLE, 4 * CYCLE));
+        let mut seen: Vec<Vec<&str>> = vec![Vec::new(); 3];
+        for turn in 0..12 {
+            seen[turn % 3].extend(sentences(&deck.page(PAGE_KEYS)));
+        }
+        for (kind, seen) in ROTATION.iter().zip(&seen) {
+            let pool = kind.pool().len();
+            let first_cycle = &seen[..seen.len().min(pool)];
+            let distinct: BTreeSet<&&str> = first_cycle.iter().collect();
+            assert_eq!(distinct.len(), first_cycle.len(), "{kind:?}");
         }
     }
 
     #[test]
-    fn the_same_seed_deals_the_same_rounds() {
+    fn the_same_seed_deals_the_same_pages() {
         let (mut a, mut b) = (Deck::shuffled(42), Deck::shuffled(42));
-        for _ in 0..2 * CYCLE + 3 {
-            assert_eq!(a.deal(), b.deal());
+        for _ in 0..40 {
+            assert_eq!(a.page(PAGE_KEYS), b.page(PAGE_KEYS));
         }
     }
 
-    /// 켤 때마다 씨앗이 다르면, 처음 보는 문장도 그때마다 다르다.
+    /// 켤 때마다 씨앗이 다르면, 처음 보는 글도 그때마다 다르다.
     #[test]
-    fn different_seeds_start_with_different_sentences() {
-        let firsts: BTreeSet<&str> = (0..40)
-            .map(|seed| Deck::shuffled(seed).deal()[0].text)
+    fn different_seeds_start_with_different_pages() {
+        let firsts: BTreeSet<String> = (0..40)
+            .map(|seed| Deck::shuffled(seed).page(PAGE_KEYS)[0].text.clone())
             .collect();
-        assert!(firsts.len() >= 20, "40번 켜서 {}가지뿐이다", firsts.len());
-        // 어느 한 문장으로 쏠리지도 않는다.
-        let rounds: BTreeSet<Vec<&str>> = (0..40)
-            .map(|seed| texts(&Deck::shuffled(seed).deal()))
-            .collect();
-        assert_eq!(rounds.len(), 40);
+        assert_eq!(firsts.len(), 40);
     }
 
-    /// 한 바퀴를 다 돌고 다시 섞을 때, 방금 친 문장이 바로 다음 과정에 또 나오지 않는다.
+    /// 한 바퀴를 다 돌고 다시 섞을 때, 방금 친 문장이 같은 쪽이나 바로 다음 쪽에 또 나오지 않는다.
     #[test]
-    fn a_new_cycle_does_not_repeat_the_round_just_typed() {
-        for seed in 0..50 {
+    fn a_new_cycle_does_not_repeat_what_was_just_typed() {
+        for seed in 0..30 {
             let mut deck = Deck::shuffled(seed);
-            let mut previous = deck.deal();
-            for _ in 0..3 * CYCLE {
-                let next = deck.deal();
-                for line in &next {
-                    assert!(!previous.contains(line), "씨앗 {seed}: {}", line.text);
+            let mut previous: Vec<Vec<&str>> = vec![Vec::new(); 3];
+            for turn in 0..60 {
+                let page = sentences(&deck.page(PAGE_KEYS));
+                let distinct: BTreeSet<&&str> = page.iter().collect();
+                assert_eq!(
+                    distinct.len(),
+                    page.len(),
+                    "씨앗 {seed}: 한 쪽 안에서 겹친다"
+                );
+                for text in &page {
+                    assert!(!previous[turn % 3].contains(text), "씨앗 {seed}: {text}");
                 }
-                previous = next;
+                previous[turn % 3] = page;
             }
         }
     }

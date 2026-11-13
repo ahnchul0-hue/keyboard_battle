@@ -6,6 +6,7 @@ pub mod keymap;
 pub mod measure;
 pub mod overlay;
 pub mod player;
+pub mod records;
 pub mod round;
 pub mod texts;
 pub mod tour;

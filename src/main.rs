@@ -5,6 +5,7 @@ mod app;
 mod input;
 mod result;
 mod settings;
+mod store;
 mod theme;
 mod view;
 
@@ -75,7 +76,8 @@ fn create_app(creation: &eframe::CreationContext<'_>) -> Box<dyn eframe::App> {
     } else {
         Deck::shuffled(seed())
     };
-    Box::new(app::PracticeApp::new(deck))
+    let (store, records) = store::Store::open();
+    Box::new(app::PracticeApp::new(deck, store, records))
 }
 
 /// 콘솔이 없어 오류가 보이지 않으므로, 실행 파일 옆에 적어 둔다.

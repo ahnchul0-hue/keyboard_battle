@@ -1,7 +1,6 @@
 //! 적어 둔 일을 제때에 맞춰 다시 해 보인다. 다시 보기와 둘러보기에 쓴다.
 
 use crate::round::{Action, Round};
-use crate::texts::Sentence;
 
 /// 다시 보기를 시작하고 첫 글쇠가 눌리기까지의 뜸(초).
 const LEAD_IN: f64 = 0.6;
@@ -33,15 +32,11 @@ pub struct Player {
 }
 
 impl Player {
-    /// `lines`를 처음부터 치는 과정에 `steps`를 차례로 해 보인다. `now`는 시작하는 시각(초)이다.
-    pub fn new(
-        lines: Vec<Sentence>,
-        steps: Vec<(f64, Step)>,
-        caption: &'static str,
-        now: f64,
-    ) -> Self {
+    /// 아직 아무것도 치지 않은 과정 `round`에 `steps`를 차례로 해 보인다.
+    /// `now`는 시작하는 시각(초)이다.
+    pub fn new(round: Round, steps: Vec<(f64, Step)>, caption: &'static str, now: f64) -> Self {
         Self {
-            round: Round::new(lines),
+            round,
             steps,
             next: 0,
             started_at: now,
@@ -50,7 +45,7 @@ impl Player {
         }
     }
 
-    /// `original`을 친 그대로 다시 보인다. 오래 멈춘 곳은 줄여서 보이되,
+    /// `original`을 친 그대로, 같은 쪽 나눔으로 다시 보인다. 오래 멈춘 곳은 줄여서 보이되,
     /// 과정에는 본디 시각을 남기므로 속도와 정확도는 처음과 같게 나온다.
     pub fn replay(original: &Round, caption: &'static str, now: f64) -> Self {
         let mut at = LEAD_IN;
@@ -62,7 +57,7 @@ impl Player {
             previous = Some(time);
             (at, Step::Do(action, time))
         });
-        Self::new(original.lines().to_vec(), steps.collect(), caption, now)
+        Self::new(original.fresh(), steps.collect(), caption, now)
     }
 
     /// 다시 해 보이고 있는 과정.
@@ -127,7 +122,7 @@ impl Player {
 mod tests {
     use super::*;
     use crate::keymap::keystroke_for;
-    use crate::texts::Kind;
+    use crate::texts::{Kind, Sentence};
 
     fn press(unit: char) -> Action {
         let (pos, shift) = keystroke_for(unit).expect("글쇠 하나로 치는 문자");
@@ -136,10 +131,7 @@ mod tests {
 
     /// 'ok'를 치다 한 번 틀리고, 한참 쉬었다가 마저 친 과정.
     fn original() -> Round {
-        let line = Sentence {
-            kind: Kind::English,
-            text: "ok",
-        };
+        let line = Sentence::new(Kind::English, "ok");
         let mut round = Round::new(vec![line]);
         round.apply(press('o'), 100.0);
         round.apply(press('x'), 100.2);
@@ -187,16 +179,13 @@ mod tests {
 
     #[test]
     fn captions_change_on_cue() {
-        let line = Sentence {
-            kind: Kind::English,
-            text: "ok",
-        };
+        let line = Sentence::new(Kind::English, "ok");
         let steps = vec![
             (1.0, Step::Say("첫째")),
             (2.0, Step::Do(press('o'), 0.0)),
             (3.0, Step::Say("둘째")),
         ];
-        let mut player = Player::new(vec![line], steps, "처음", 10.0);
+        let mut player = Player::new(Round::new(vec![line]), steps, "처음", 10.0);
         assert_eq!(player.caption(), "처음");
         assert!(!player.advance(11.0), "설명만 바뀌었고 과정에 한 일은 없다");
         assert_eq!(player.caption(), "첫째");

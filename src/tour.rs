@@ -1,9 +1,9 @@
-//! 둘러보기: 프로그램이 스스로 첫 문장을 쳐 보이며 화면의 각 부분을 설명한다.
+//! 둘러보기: 프로그램이 스스로 첫 글을 쳐 보이며 화면의 각 부분을 설명한다.
 
 use crate::keymap::keystroke_for;
 use crate::measure::key_units;
 use crate::player::{Player, Step};
-use crate::round::Action;
+use crate::round::{Action, Round};
 use crate::texts;
 
 /// 글쇠 사이의 간격(초). 1분에 350타쯤 되는 빠르기다.
@@ -43,14 +43,14 @@ impl Script {
 
 /// 둘러보기를 시작한다. `now`는 시작하는 시각(초)이다.
 ///
-/// 늘 같은 첫 과정의 문장을 쓰고, 실제로 치는 과정과는 따로 논다.
+/// 늘 같은 처음 두 쪽의 글을 쓰고, 실제로 치는 연습과는 따로 논다.
 pub fn tour(now: f64) -> Player {
     let mut script = Script {
         at: 0.0,
         typing: 0.0,
         steps: Vec::new(),
     };
-    script.say("지금 칠 문장은 테두리가 굵은 블럭에 있습니다.", 2.0);
+    script.say("지금 칠 글은 테두리가 굵은 블럭에 있습니다.", 2.0);
     script.keys("다람쥐");
     script.say(
         "한/영 키는 누르지 않습니다. 문장에 맞춰 한글과 영문이 저절로 바뀝니다.",
@@ -66,34 +66,40 @@ pub fn tour(now: f64) -> Player {
     script.act(Action::Backspace, 0.5);
     script.keys("쳇바퀴에 타고파");
     script.say(
-        "문장을 끝내면 다음 문장으로 넘어갑니다. 시간이 다 될 때까지 문장이 이어집니다.",
+        "글은 한 문단씩 나옵니다. 문단을 다 치면 아래의 다음 글이 올라옵니다.",
         2.2,
     );
-    script.keys("얘, 옛");
+    script.keys(" 얘, 옛");
     let last = "정한 시간이 다 되면 결과 창이 뜹니다. 이제 직접 쳐 보세요.";
     script.say(last, 2.4);
     // 마지막 설명을 읽을 시간을 벌어 둔다.
     script.say(last, 0.0);
-    Player::new(texts::opening(), script.steps, "", now)
+    let [first, next] = texts::opening();
+    let mut round = Round::new(first);
+    // 다음에 칠 글이 아래에 미리 보이는 모습까지 보여 준다.
+    round.extend(next);
+    Player::new(round, script.steps, "", now)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    /// 대본대로 끝까지 가면, 첫 문장을 한 번 틀렸다가 고쳐서 끝내고 둘째 문장을 치다 만다.
+    /// 대본대로 끝까지 가면, 첫 글을 한 번 틀렸다가 고치고 둘째 문장의 앞머리까지 친다.
     #[test]
-    fn the_tour_types_the_first_line_with_one_slip() {
+    fn the_tour_types_into_the_first_page_with_one_slip() {
         let mut player = tour(0.0);
         player.advance(1000.0);
         let round = player.round();
-        assert_eq!(round.results().len(), 1);
-        let first = round.results()[0];
-        assert_eq!((first.wrong, round.slips()[0].len()), (2, 1));
-        assert_eq!(round.typed().text(), "얘, 옛");
+        assert_eq!(round.typed().text(), "다람쥐 헌 쳇바퀴에 타고파 얘, 옛");
+        assert!(round.results().is_empty(), "문단을 다 치지는 않는다");
+        assert_eq!(round.page_of(0).end, 1);
+        assert_eq!(round.lines().len(), 2, "미리 보일 다음 쪽이 있다");
+        let so_far = round.so_far(player.clock());
+        assert_eq!((so_far.wrong, round.slips()[0].len()), (2, 1));
         // 설명을 읽는 시간은 속도에 들어가지 않는다. 틀리고 지운 만큼만 느려진다.
         let flawless = 60.0 / KEY_GAP;
-        assert!(first.per_minute() > flawless * 0.7 && first.per_minute() < flawless);
+        assert!(so_far.per_minute() > flawless * 0.7 && so_far.per_minute() < flawless);
     }
 
     #[test]

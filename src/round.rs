@@ -5,6 +5,7 @@
 //! 그렇게 누른 글쇠는 모두 정확도에 반영된다. 지우개(Backspace)는 세지 않는다.
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::ops::Range;
 
 use crate::keymap::KeyPos;
 use crate::measure::{Tally, char_of_unit, common_prefix, key_units};
@@ -18,13 +19,16 @@ pub enum Action {
     Press(KeyPos, bool),
     /// 조합 중이면 낱자 하나를, 아니면 글자 하나를 지운다.
     Backspace,
-    /// 지금 문장에 친 글을 모두 지운다. 누른 글쇠 수와 시간은 그대로 남는다.
-    Clear,
+    /// 친 글에서 처음 틀린 데부터 뒤를 지운다. 틀린 데가 없으면 아무 일도 없다.
+    /// 누른 글쇠 수와 시간은 그대로 남는다.
+    Rewind,
 }
 
 #[derive(Clone, Debug)]
 pub struct Round {
     lines: Vec<Sentence>,
+    /// 쪽(한 블럭에 함께 보이는 글들)이 시작하는 글 번호. 늘 0으로 시작한다.
+    pages: Vec<usize>,
     /// 끝낸 문장들의 기록. 길이가 곧 지금 칠 문장의 번호다.
     done: Vec<Tally>,
     /// 과정 전체를 치는 데 필요한 글쇠 수.
@@ -46,9 +50,11 @@ pub struct Round {
 }
 
 impl Round {
+    /// `lines`를 한 쪽으로 삼아 시작한다.
     pub fn new(lines: Vec<Sentence>) -> Self {
-        let units = |line: &Sentence| key_units(line.text);
+        let units = |line: &Sentence| key_units(&line.text);
         Self {
+            pages: vec![0],
             needed: lines.iter().map(|line| units(line).len() as u32).sum(),
             target: lines.first().map(units).unwrap_or_default(),
             done: Vec::new(),
@@ -67,18 +73,81 @@ impl Round {
         &self.lines
     }
 
-    /// 칠 문장을 뒤에 더 붙인다. 시간을 정해 치는 연습에서 문장이 떨어지지 않게 하는 데 쓴다.
+    /// 칠 글을 새 쪽으로 뒤에 더 붙인다. 시간을 정해 치는 연습에서 글이 떨어지지 않게 하는 데 쓴다.
     pub fn extend(&mut self, lines: Vec<Sentence>) {
+        if lines.is_empty() {
+            return;
+        }
         let was_finished = self.is_finished();
-        let keys = |line: &Sentence| key_units(line.text).len() as u32;
+        let keys = |line: &Sentence| key_units(&line.text).len() as u32;
         self.needed += lines.iter().map(keys).sum::<u32>();
         self.slips
             .resize(self.slips.len() + lines.len(), BTreeSet::new());
+        if !self.lines.is_empty() {
+            self.pages.push(self.lines.len());
+        }
         self.lines.extend(lines);
         if was_finished {
-            let next = self.current().map(|line| key_units(line.text));
+            let next = self.current().map(|line| key_units(&line.text));
             self.target = next.unwrap_or_default();
         }
+    }
+
+    /// `line`번째 글이 든 쪽의 범위(글 번호). 마지막 글보다 뒤면 마지막 쪽이다.
+    pub fn page_of(&self, line: usize) -> Range<usize> {
+        let page = self.pages.partition_point(|&start| start <= line) - 1;
+        let end = self.pages.get(page + 1).copied();
+        self.pages[page]..end.unwrap_or(self.lines.len())
+    }
+
+    /// `line`번째 글이 든 쪽의 번호 (0부터).
+    pub fn page_number(&self, line: usize) -> usize {
+        self.pages.partition_point(|&start| start <= line) - 1
+    }
+
+    /// 끝까지 다 친 쪽의 수.
+    pub fn pages_done(&self) -> usize {
+        let done = self.done.len();
+        let ends = self.pages.iter().skip(1).copied();
+        let ends = ends.chain(std::iter::once(self.lines.len()));
+        ends.filter(|&end| end > 0 && end <= done).count()
+    }
+
+    /// 틀린 데가 있는 낱말들과, 그 낱말 안에서 틀리기 시작한 자리(글자 번호)들. 친 순서대로다.
+    pub fn slipped_words(&self) -> Vec<(String, Vec<usize>)> {
+        let mut words: Vec<(String, Vec<usize>)> = Vec::new();
+        for (line, slips) in self.lines.iter().zip(&self.slips) {
+            let chars: Vec<char> = line.text.chars().collect();
+            let mut last_start = None;
+            for &slip in slips {
+                // 틀린 글자가 든 낱말의 처음과 끝. 빈칸에서 틀렸으면 그 앞 낱말로 친다.
+                let at = (0..=slip.min(chars.len().saturating_sub(1)))
+                    .rev()
+                    .find(|&index| chars[index] != ' ')
+                    .unwrap_or(0);
+                let is_space = |&index: &usize| chars[index] == ' ';
+                let start = (0..at).rev().find(is_space).map_or(0, |space| space + 1);
+                let end = (at..chars.len()).find(is_space).unwrap_or(chars.len());
+                if last_start == Some(start) {
+                    // 같은 낱말에서 또 틀렸다.
+                    if let Some((_, slipped)) = words.last_mut() {
+                        slipped.push(slip.min(end) - start);
+                    }
+                } else {
+                    let word: String = chars[start..end].iter().collect();
+                    words.push((word, vec![slip.min(end) - start]));
+                    last_start = Some(start);
+                }
+            }
+        }
+        words
+    }
+
+    /// 같은 글을 같은 쪽 나눔으로 처음부터 다시 치는 과정.
+    pub fn fresh(&self) -> Self {
+        let mut fresh = Self::new(self.lines.clone());
+        fresh.pages.clone_from(&self.pages);
+        fresh
     }
 
     /// 끝낸 문장들의 기록. 문장 순서와 같다.
@@ -119,8 +188,24 @@ impl Round {
         match action {
             Action::Press(pos, shift) => self.press_key(pos, shift, now),
             Action::Backspace => self.typed.backspace(),
-            Action::Clear => self.typed.clear(),
+            Action::Rewind => self.rewind_typed(),
         }
+    }
+
+    /// 친 글을 틀리기 바로 앞까지 되돌린다. 틀린 줄 모르고 한참 더 쳤을 때, 지우개를 여러 번
+    /// 누르지 않고 한 번에 돌아가게 한다. 맞게 친 글자는 하나도 지우지 않는다.
+    fn rewind_typed(&mut self) {
+        let typed = key_units(&self.typed.text());
+        if common_prefix(&typed, &self.target) == typed.len() {
+            return;
+        }
+        let Some(line) = self.current() else {
+            return;
+        };
+        let same = |(typed, wanted): &(char, char)| typed == wanted;
+        let pairs = self.typed.done().chars().zip(line.text.chars());
+        let right = pairs.take_while(same).count();
+        self.typed.keep(right);
     }
 
     /// 문자 글쇠 하나를 누른다.
@@ -133,9 +218,9 @@ impl Round {
         self.apply(Action::Backspace, now);
     }
 
-    /// 지금 문장에 친 글을 모두 지운다. 누른 글쇠 수와 시간은 그대로 남는다.
-    pub fn clear_line(&mut self, now: f64) {
-        self.apply(Action::Clear, now);
+    /// 친 글에서 처음 틀린 데부터 뒤를 지운다. 누른 글쇠 수와 시간은 그대로 남는다.
+    pub fn rewind(&mut self, now: f64) {
+        self.apply(Action::Rewind, now);
     }
 
     /// 지금까지 일어난 일과 그 시각(초).
@@ -149,9 +234,11 @@ impl Round {
     }
 
     fn press_key(&mut self, pos: KeyPos, shift: bool, now: f64) {
-        let Some(line) = self.current().copied() else {
+        let number = self.done.len();
+        let Some(line) = self.lines.get(number) else {
             return;
         };
+        let (script, length) = (line.kind.script(), line.text.chars().count());
         let position = self.matched();
         let expected = self.target.get(position).copied();
         let was_on_track = position == key_units(&self.typed.text()).len();
@@ -159,32 +246,33 @@ impl Round {
         self.started_at.get_or_insert(now);
         self.presses += 1;
         let before = self.typed.clone();
-        self.typed.press(pos, shift, line.kind.script());
+        self.typed.press(pos, shift, script);
 
         if self.matched() < key_units(&self.typed.text()).len() {
             self.wrong += 1;
             // 잘 치다가 처음 어긋난 순간에만, 눌러야 했던 글쇠와 그 자리를 적어 둔다.
             if let Some(expected) = expected.filter(|_| was_on_track) {
                 *self.misses.entry(expected).or_default() += 1;
-                let line_number = self.done.len();
-                self.slips[line_number].extend(char_of_unit(line.text, position));
+                let slipped = char_of_unit(&self.lines[number].text, position);
+                self.slips[number].extend(slipped);
             }
             // 틀린 줄 모르고 계속 쳐도 글이 문장보다 길어지지는 않게 한다.
             // 누른 것은 세되 글에는 넣지 않는다.
-            if self.typed.text().chars().count() > line.text.chars().count() {
+            if self.typed.text().chars().count() > length {
                 self.typed = before;
             }
         }
-        if self.typed.text() == line.text {
-            self.finish_line(line, now);
+        if self.typed.text() == self.lines[number].text {
+            self.finish_line(length, now);
         }
     }
 
-    fn finish_line(&mut self, line: Sentence, now: f64) {
+    /// 지금 글을 끝낸 것으로 적는다. `chars`는 그 글의 글자 수다.
+    fn finish_line(&mut self, chars: usize, now: f64) {
         let needed = self.target.len() as u32;
         self.done.push(Tally {
             needed,
-            chars: line.text.chars().count() as u32,
+            chars: chars as u32,
             presses: self.presses,
             wrong: self.wrong,
             timed: needed.saturating_sub(1),
@@ -195,7 +283,7 @@ impl Round {
         self.wrong = 0;
         self.target = self
             .current()
-            .map(|next| key_units(next.text))
+            .map(|next| key_units(&next.text))
             .unwrap_or_default();
     }
 
@@ -211,7 +299,7 @@ impl Round {
         let line = self.current()?;
         let matched = self.matched();
         // 다 친 글자 수는, 다음에 칠 글쇠가 든 글자의 번호와 같다.
-        let chars = char_of_unit(line.text, matched).unwrap_or(line.text.chars().count());
+        let chars = char_of_unit(&line.text, matched).unwrap_or(line.text.chars().count());
         Some(Tally {
             needed: matched as u32,
             chars: chars as u32,
@@ -257,7 +345,7 @@ mod tests {
     use crate::texts::Kind;
 
     fn round(lines: &[(Kind, &'static str)]) -> Round {
-        let lines = lines.iter().map(|&(kind, text)| Sentence { kind, text });
+        let lines = lines.iter().map(|&(kind, text)| Sentence::new(kind, text));
         Round::new(lines.collect())
     }
 
@@ -284,7 +372,7 @@ mod tests {
         assert_eq!(round.results(), [expected]);
         // 1초에 한 글쇠씩 쳤다.
         assert_eq!(expected.per_minute(), 60.0);
-        assert_eq!(round.current().map(|line| line.text), Some("ok"));
+        assert_eq!(round.current().map(|line| line.text.as_str()), Some("ok"));
         assert_eq!(round.typed().text(), "");
         assert!(!round.is_finished());
 
@@ -385,7 +473,7 @@ mod tests {
         round.backspace(2.5);
         press_all(&mut round, "ㅏㄴㅏ", 3.0);
         press_all(&mut round, "x", 7.0);
-        round.clear_line(8.0);
+        round.rewind(8.0);
         press_all(&mut round, "ok", 9.0);
         press_all(&mut round, "z", 20.0);
         assert!(round.is_finished());
@@ -405,13 +493,44 @@ mod tests {
     }
 
     #[test]
-    fn clearing_the_line_keeps_what_was_pressed() {
+    fn rewinding_keeps_what_was_pressed() {
         let mut round = round(&[(Kind::English, "ab")]);
         press_all(&mut round, "x", 0.0);
-        round.clear_line(0.0);
+        round.rewind(0.0);
         press_all(&mut round, "ab", 1.0);
         let line = round.results()[0];
         assert_eq!((line.presses, line.wrong, line.seconds), (3, 1, 2.0));
+    }
+
+    /// 되돌리면 틀리기 바로 앞까지만 지워진다. 긴 문단에서 맞게 친 앞부분을 잃지 않는다.
+    #[test]
+    fn rewinding_goes_back_only_as_far_as_the_slip() {
+        let mut round = round(&[(Kind::English, "the quick fox")]);
+        press_all(&mut round, "the quack f", 0.0);
+        round.rewind(20.0);
+        assert_eq!(round.typed().text(), "the qu");
+        // 틀린 데가 없으면 그대로다.
+        round.rewind(21.0);
+        assert_eq!(round.typed().text(), "the qu");
+        press_all(&mut round, "ick fox", 22.0);
+        assert!(round.is_finished());
+
+        // 한글은 글자 단위로 돌아간다. 조합 중인 글자가 틀렸으면 그 글자만 지운다.
+        let mut round = self::round(&[(Kind::Hangul, "가는 말이 곱다")]);
+        press_all(&mut round, "ㄱㅏㄴㅡㄴ ㅁㅏㄹㅇㅣ ㄱㅗㄱ", 0.0);
+        assert_eq!(round.typed().text(), "가는 말이 곡");
+        round.rewind(30.0);
+        assert_eq!(round.typed().text(), "가는 말이 ");
+        // 앞 글자의 홀소리를 틀리고 더 쳤으면 그 글자부터 지운다.
+        press_all(&mut round, "ㄱㅜㅂㄷㅏ", 31.0);
+        assert_eq!(round.typed().text(), "가는 말이 굽다");
+        round.rewind(40.0);
+        assert_eq!(round.typed().text(), "가는 말이 ");
+        // 받침이 다음 글자로 넘어가기를 기다리는 것은 틀린 것이 아니다.
+        press_all(&mut round, "ㄱㅗㅂㄷ", 41.0);
+        assert_eq!(round.typed().text(), "가는 말이 곱ㄷ");
+        round.rewind(50.0);
+        assert_eq!(round.typed().text(), "가는 말이 곱ㄷ");
     }
 
     #[test]
@@ -430,10 +549,7 @@ mod tests {
     fn more_lines_can_be_added_while_typing() {
         let mut round = round(&[(Kind::English, "ab")]);
         press_all(&mut round, "a", 0.0);
-        let more = |text| Sentence {
-            kind: Kind::English,
-            text,
-        };
+        let more = |text: &str| Sentence::new(Kind::English, text);
         round.extend(vec![more("cd")]);
         assert_eq!(round.lines().len(), 2);
         assert_eq!(round.progress(), 0.25);
@@ -462,6 +578,62 @@ mod tests {
         assert_eq!((partial.timed, partial.seconds), (2, 5.0));
         assert_eq!(round.reached(), ['ㄱ', 'ㅏ', 'ㄴ']);
         assert_eq!(round.so_far(5.0), partial);
+    }
+
+    /// 처음에 준 글들이 첫 쪽이고, 이어 붙일 때마다 새 쪽이 된다.
+    #[test]
+    fn lines_added_later_form_new_pages() {
+        let more = |texts: &[&str]| -> Vec<Sentence> {
+            let line = |text: &&str| Sentence::new(Kind::English, *text);
+            texts.iter().map(line).collect()
+        };
+        let mut round = Round::new(more(&["ab", "cd"]));
+        assert_eq!(round.page_of(0), 0..2);
+        round.extend(more(&["ef"]));
+        round.extend(more(&["gh", "ij", "kl"]));
+        let pages: Vec<_> = (0..6).map(|line| round.page_of(line)).collect();
+        assert_eq!(pages, [0..2, 0..2, 2..3, 3..6, 3..6, 3..6]);
+        assert_eq!(round.page_of(9), 3..6, "마지막 글보다 뒤면 마지막 쪽");
+
+        // 빈 과정에 붙인 글은 첫 쪽이 된다.
+        let mut round = Round::new(Vec::new());
+        round.extend(more(&["ab"]));
+        round.extend(more(&["cd"]));
+        assert_eq!((round.page_of(0), round.page_of(1)), (0..1, 1..2));
+
+        // 쪽 번호와 끝낸 쪽 수.
+        assert_eq!((round.page_number(0), round.page_number(1)), (0, 1));
+        assert_eq!(round.pages_done(), 0);
+        press_all(&mut round, "ab", 0.0);
+        assert_eq!(round.pages_done(), 1);
+
+        // 같은 글을 처음부터 다시 칠 때도 쪽 나눔은 그대로다.
+        let fresh = round.fresh();
+        assert_eq!(fresh.lines(), round.lines());
+        assert_eq!((fresh.page_of(0), fresh.page_of(1)), (0..1, 1..2));
+        assert!(fresh.results().is_empty() && fresh.log().is_empty());
+    }
+
+    /// 틀린 자리는 낱말로 묶어 돌려준다. 긴 글을 통째로 보이지 않고 틀린 낱말만 보이려는 것이다.
+    #[test]
+    fn slips_are_gathered_by_word() {
+        let mut round = round(&[(Kind::English, "the cat sat"), (Kind::Hangul, "가나 다라")]);
+        // 'cat'의 a와 t를 한 번씩 틀리고, 'sat' 앞의 빈칸을 틀린다.
+        press_all(&mut round, "the cx", 0.0);
+        round.backspace(0.0);
+        press_all(&mut round, "ax", 1.0);
+        round.backspace(1.0);
+        press_all(&mut round, "tx", 2.0);
+        round.backspace(2.0);
+        press_all(&mut round, " sat", 3.0);
+        // '다'의 홀소리를 틀린다.
+        press_all(&mut round, "ㄱㅏㄴㅏ ㄷㅓ", 10.0);
+        let words = round.slipped_words();
+        let expected = [
+            ("cat".to_owned(), vec![1, 2, 3]),
+            ("다라".to_owned(), vec![0]),
+        ];
+        assert_eq!(words, expected);
     }
 
     #[test]

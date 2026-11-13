@@ -68,7 +68,7 @@ impl Review {
         let mut line = Line::default();
         for &(time, action) in round.log() {
             let number = again.results().len();
-            let target = again.current().map(|line| key_units(line.text));
+            let target = again.current().map(|line| key_units(&line.text));
             let target = target.unwrap_or_default();
             again.apply(action, time);
 
@@ -157,7 +157,7 @@ impl Ledger {
     /// 친 과정 하나를 더한다. 시간이 다 되어 문장을 치다 말았으면 친 데까지만 센다.
     pub fn add(&mut self, round: &Round, review: &Review) {
         let finished = &round.lines()[..round.results().len()];
-        let typed = finished.iter().flat_map(|line| key_units(line.text));
+        let typed = finished.iter().flat_map(|line| key_units(&line.text));
         for unit in typed.chain(round.reached().iter().copied()) {
             self.keys.entry(unit).or_default().needed += 1;
         }
@@ -355,19 +355,19 @@ mod tests {
     use crate::texts::{Kind, Sentence};
 
     fn round(lines: &[(Kind, &'static str)]) -> Round {
-        let lines = lines.iter().map(|&(kind, text)| Sentence { kind, text });
+        let lines = lines.iter().map(|&(kind, text)| Sentence::new(kind, text));
         Round::new(lines.collect())
     }
 
     /// 적어 준 대로 친다. 글쇠 사이는 `gap`초다.
-    /// `<`는 지우기, `!`는 줄 비우기, `_`는 `gap`만큼 더 쉬기이고, 나머지는 그 낱자나 문자의 글쇠다.
+    /// `<`는 지우기, `!`는 틀린 데까지 되돌리기, `_`는 `gap`만큼 더 쉬기이고, 나머지는 그 낱자나 문자의 글쇠다.
     fn play(round: &mut Round, script: &str, start: f64, gap: f64) -> f64 {
         let mut now = start;
         for step in script.chars() {
             now += gap;
             match step {
                 '<' => round.backspace(now),
-                '!' => round.clear_line(now),
+                '!' => round.rewind(now),
                 '_' => {}
                 unit => {
                     let (pos, shift) = keystroke_for(unit).expect("글쇠 하나로 치는 문자");
@@ -417,11 +417,23 @@ mod tests {
     #[test]
     fn retyping_what_was_erased_is_repair_time() {
         let mut round = round(&[(Kind::English, "abcd")]);
-        // abc까지 치고 줄을 비운 뒤 처음부터 다시 친다.
-        play(&mut round, "abc!abcd", 0.0, 1.0);
+        // abc까지 치고 모두 지운 뒤 처음부터 다시 친다.
+        play(&mut round, "abc<<<abcd", 0.0, 1.0);
         let review = Review::of(&round);
-        // 비우기와 다시 친 a, b, c가 고친 시간이다.
-        assert_eq!((review.repair_seconds, review.clean_seconds), (4.0, 3.0));
+        // 지우기 세 번과 다시 친 a, b, c가 고친 시간이다.
+        assert_eq!((review.repair_seconds, review.clean_seconds), (6.0, 3.0));
+        assert_eq!(review.clean_keys, 3);
+    }
+
+    /// 틀린 데까지 한 번에 되돌리는 것도 고친 시간이다.
+    #[test]
+    fn rewinding_to_the_slip_is_repair_time() {
+        let mut round = round(&[(Kind::English, "abcd")]);
+        // ab까지 맞게 치고, x를 잘못 누르고, 되돌린 뒤 이어서 친다.
+        play(&mut round, "abx!cd", 0.0, 1.0);
+        assert!(round.is_finished());
+        let review = Review::of(&round);
+        assert_eq!((review.repair_seconds, review.clean_seconds), (2.0, 3.0));
         assert_eq!(review.clean_keys, 3);
     }
 
@@ -445,10 +457,10 @@ mod tests {
             (Kind::Rust, "a + b"),
         ];
         let mut round = round(&lines);
-        // 지우기부터 누르고, 받침을 틀리고, 틀린 채로 더 치고, 줄을 비우고, 쉬었다가 친다.
+        // 지우기부터 누르고, 받침을 틀리고, 틀린 채로 더 치고, 틀린 데까지 되돌리고, 쉬었다가 친다.
         play(&mut round, "<ㄱㅏㅂㅅㅆㅓ<ㅏㄴ ㄸㅓㄱ", 0.0, 0.3);
         play(&mut round, "fpxxxx<<ox", 20.0, 0.2);
-        play(&mut round, "a +!__a + b", 40.0, 0.4);
+        play(&mut round, "a xy!__+ b", 40.0, 0.4);
         assert!(round.is_finished());
         let review = Review::of(&round);
         let taken = total(&round).seconds;

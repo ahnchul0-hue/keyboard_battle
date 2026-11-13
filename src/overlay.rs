@@ -243,10 +243,10 @@ mod tests {
             let script = sentence.kind.script();
             let length = sentence.text.chars().count();
             let mut typed = TypedText::default();
-            for unit in key_units(sentence.text) {
+            for unit in key_units(&sentence.text) {
                 let (pos, shift) = keystroke_for(unit).expect("칠 수 있는 문자");
                 typed.press(pos, shift, script);
-                let cells = cells(sentence.text, &typed);
+                let cells = cells(&sentence.text, &typed);
                 assert_eq!(cells.len(), length, "{}", sentence.text);
                 let composing = cells.iter().filter(|c| c.state == Composing).count();
                 assert!(composing <= 1 && cells.iter().all(|c| c.state != Wrong));
@@ -258,7 +258,7 @@ mod tests {
                 }
             }
             assert!(
-                cells(sentence.text, &typed)
+                cells(&sentence.text, &typed)
                     .iter()
                     .all(|c| c.state == Right)
             );

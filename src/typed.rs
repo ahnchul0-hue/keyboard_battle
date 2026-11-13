@@ -44,6 +44,14 @@ impl TypedText {
         *self = Self::default();
     }
 
+    /// 조합이 끝난 글의 앞 `chars`글자만 남긴다. 그 뒤의 글자와 조합 중인 글자는 지운다.
+    pub fn keep(&mut self, chars: usize) {
+        let end = self.done.char_indices().nth(chars);
+        self.done
+            .truncate(end.map_or(self.done.len(), |(at, _)| at));
+        self.composer = Composer::default();
+    }
+
     /// 조합이 끝난 글.
     pub fn done(&self) -> &str {
         &self.done
@@ -79,6 +87,21 @@ mod tests {
         let mut typed = TypedText::default();
         press_all(&mut typed, keys, Script::Hangul);
         typed.text()
+    }
+
+    #[test]
+    fn keeping_the_front_drops_the_rest_and_the_syllable_in_progress() {
+        let mut typed = TypedText::default();
+        press_all(&mut typed, "rksk ekf", Script::Hangul);
+        assert_eq!((typed.done(), typed.composing()), ("가나 ", Some('달')));
+        typed.keep(2);
+        assert_eq!((typed.done(), typed.composing()), ("가나", None));
+        // 가진 것보다 많이 남기라고 하면 조합 중인 글자만 지운다.
+        press_all(&mut typed, "e", Script::Hangul);
+        typed.keep(10);
+        assert_eq!(typed.text(), "가나");
+        typed.keep(0);
+        assert_eq!(typed.text(), "");
     }
 
     #[test]
