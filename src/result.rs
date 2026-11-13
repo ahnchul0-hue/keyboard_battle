@@ -192,11 +192,16 @@ fn section(
         ui.set_width(ui.available_width());
         // 높이는 내용을 넣기 전에 정한다. 넣은 뒤에 정하면 그만큼이 내용 아래에 더 붙는다.
         ui.set_min_height(min_height);
-        // 내용의 높이는 그 앞뒤로 다음 것이 놓일 자리가 얼마나 내려갔는지로 잰다.
-        // 구획의 크기로 재면, 방금 늘려 둔 높이가 섞여 들어가 다시는 줄어들지 않는다.
-        let top = ui.cursor().top();
-        body(ui);
-        (ui.cursor().top() - top - ui.spacing().item_spacing.y).max(0.0)
+        // 나란히 놓는 자리는 넘어가는 글줄을 양쪽 끝에 맞춰 늘린다. 낱말 사이가 벌어져 읽기
+        // 나쁘므로, 구획 안은 왼쪽에 붙여 놓는 자리로 새로 잡는다.
+        let inside = ui.vertical(|ui| {
+            // 내용의 높이는 그 앞뒤로 다음 것이 놓일 자리가 얼마나 내려갔는지로 잰다.
+            // 구획의 크기로 재면, 방금 늘려 둔 높이가 섞여 들어가 다시는 줄어들지 않는다.
+            let top = ui.cursor().top();
+            body(ui);
+            (ui.cursor().top() - top - ui.spacing().item_spacing.y).max(0.0)
+        });
+        inside.inner
     });
     shown.inner
 }
