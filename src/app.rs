@@ -207,7 +207,7 @@ impl PracticeApp {
         self.typed_at = None;
         let review = Review::of(&self.round);
         self.ledger.add(&self.round, &review);
-        let total = self.round.so_far(at);
+        let total = self.total(at);
         let advice = coach::advise(&total, &self.round, &review, &self.ledger);
         self.look_back = Some((review, advice));
     }
@@ -425,8 +425,8 @@ impl PracticeApp {
     /// 위쪽에 보여 주는 기록을 고쳐 적는다. 정해진 간격이 지났거나 문장을 막 끝냈을 때만 바꾼다.
     fn refresh_live(&mut self, now: f64) {
         // 되감아 보이는 과정에는 본디 시각이 남아 있으므로, 그 시각으로 기록을 낸다.
-        // 연습이 끝난 뒤에는 끝난 시각에서 멈춘다.
-        let own_clock = self.finished_at.unwrap_or(now);
+        // 연습이 끝난 뒤에는 결과 창에 적는 기록과 같은 데서 멈춘다.
+        let own_clock = self.measured_until(now);
         let clock = self.player.as_ref().map_or(own_clock, Player::clock);
         let lines = self.shown().results().len();
         let so_far = self.shown().so_far(clock);
@@ -436,13 +436,24 @@ impl PracticeApp {
         }
     }
 
-    /// 이번 연습 전체의 기록. 끝났으면 끝난 때까지, 아니면 `now`까지다.
+    /// 치다 만 문장의 시간을 어디까지 잴지. 연습 중에는 `now`까지 잰다.
+    /// 연습이 끝난 뒤에는 마지막 글쇠까지만 잰다. 시간이 다 되기를 기다리며 손을 놓고 있던 동안을
+    /// 그 문장을 친 시간에 넣으면, 치지도 않은 시간 때문에 속도가 깎인다.
+    fn measured_until(&self, now: f64) -> f64 {
+        match self.finished_at {
+            Some(finished_at) => self.round.last_action_at().unwrap_or(finished_at),
+            None => now,
+        }
+    }
+
+    /// 이번 연습 전체의 기록. 치다 만 문장도 맞게 친 데까지 들어 있다.
     fn total(&self, now: f64) -> Tally {
-        self.round.so_far(self.finished_at.unwrap_or(now))
+        self.round.so_far(self.measured_until(now))
     }
 
     fn summary(&self, now: f64) -> Summary<'_> {
         let end = self.finished_at.unwrap_or(now);
+        let measured_until = self.measured_until(now);
         let round = &self.round;
         // 종류마다, 끝낸 문장들의 기록에 치다 만 문장의 기록을 더한다.
         let mut kinds = Vec::new();
@@ -452,7 +463,7 @@ impl PracticeApp {
             let sentences = done.clone().count();
             let mut tally: Tally = done.map(|(_, tally)| *tally).sum();
             if round.current().is_some_and(|line| line.kind == kind) {
-                tally = tally + round.in_progress(end).unwrap_or_default();
+                tally = tally + round.in_progress(measured_until).unwrap_or_default();
             }
             if tally.presses > 0 {
                 kinds.push((kind, sentences, tally));
@@ -1126,10 +1137,10 @@ mod tests {
             "문장을 끝내면 바로 고쳐 적는다"
         );
 
-        // 연습이 끝나면 숫자는 끝난 시각에서 멈추고, 새 연습을 시작하면 처음으로 돌아간다.
+        // 연습이 끝나면 숫자는 결과 창의 기록에서 멈추고, 새 연습을 시작하면 처음으로 돌아간다.
         let end = type_until_time_is_up(&mut app, done);
         app.refresh_live(end + 100.0);
-        assert_eq!(app.live, app.round.so_far(end));
+        assert_eq!(app.live, app.summary(end + 100.0).total);
         app.choose(Choice::Again, end + 100.0);
         app.refresh_live(end + 100.1);
         assert_eq!(app.live, Tally::default());
@@ -1170,7 +1181,8 @@ mod tests {
 
         let summary = app.summary(end + 5.0);
         assert_eq!((summary.minutes, summary.stopped_after), (1, None));
-        assert_eq!(summary.total, app.round.so_far(end));
+        let last_key = app.round.last_action_at().expect("친 것이 있다");
+        assert_eq!(summary.total, app.round.so_far(last_key));
         assert_eq!(summary.sentences, app.round.results().len());
         assert!(summary.sentences >= 8, "{}문장", summary.sentences);
         // 0.1초에 한 글쇠씩 쳤다.
@@ -1433,6 +1445,22 @@ mod tests {
         assert_eq!(summary.sentences, 1);
         assert_eq!(summary.total.presses, app.round.results()[0].presses + 1);
         assert!(summary.counsel.is_some());
+    }
+
+    /// 시간이 다 되기를 기다리며 손을 놓고 있던 동안은, 치다 만 문장을 친 시간에 넣지 않는다.
+    #[test]
+    fn waiting_for_the_time_to_run_out_does_not_slow_the_record() {
+        let mut app = practicing(1);
+        // 첫 문장을 0.1초에 한 글쇠씩 여섯 글쇠만 치고, 시간이 다 될 때까지 기다린다.
+        for (index, unit) in "ㄷㅏㄹㅏㅁㅈ".chars().enumerate() {
+            app.handle_events(&press(unit, true), 0.1 * (index + 1) as f64);
+        }
+        app.handle_events(&[], 200.0);
+        assert!(app.finished_at.is_some());
+        let total = app.summary(200.0).total;
+        assert_eq!((total.needed, total.presses), (6, 6));
+        assert!((total.seconds - 0.5).abs() < 1e-9);
+        assert!((total.per_minute() - 600.0).abs() < 1e-6);
     }
 
     /// 결과는 한글, 영문, 러스트로 나눠 보이고, 치다 만 문장도 그 종류에 넣는다.

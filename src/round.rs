@@ -143,6 +143,11 @@ impl Round {
         &self.log
     }
 
+    /// 마지막 일이 일어난 시각(초). 아직 아무 일도 없었으면 `None`.
+    pub fn last_action_at(&self) -> Option<f64> {
+        self.log.last().map(|&(time, _)| time)
+    }
+
     fn press_key(&mut self, pos: KeyPos, shift: bool, now: f64) {
         let Some(line) = self.current().copied() else {
             return;
