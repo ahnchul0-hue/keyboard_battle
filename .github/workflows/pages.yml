@@ -1,0 +1,57 @@
+name: 웹 버전 올리기
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  # 저장소 설정에서 Pages를 켜기 전에는 올릴 곳이 없다. 켜져 있을 때만 다음 작업으로 넘어간다.
+  check:
+    name: Pages 설정 확인
+    runs-on: ubuntu-latest
+    permissions:
+      pages: read
+    outputs:
+      ready: ${{ steps.pages.outputs.ready }}
+    steps:
+      - id: pages
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          source=$(gh api "repos/${{ github.repository }}/pages" --jq .build_type 2>/dev/null || true)
+          if [ "$source" = "workflow" ]; then
+            echo "ready=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "::notice::웹 버전을 올리지 않았습니다. Settings → Pages에서 Source를 GitHub Actions로 바꾸면 다음부터 올라갑니다."
+          fi
+
+  deploy:
+    name: 빌드해서 올리기
+    needs: check
+    if: needs.check.outputs.ready == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deploy.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v7
+      - run: rustup toolchain install
+      - uses: Swatinem/rust-cache@v2
+      - run: web/build.sh
+      - uses: actions/upload-pages-artifact@v5
+        with:
+          path: target/web-dist
+      - id: deploy
+        uses: actions/deploy-pages@v5

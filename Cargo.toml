@@ -1,0 +1,36 @@
+[package]
+name = "keyboard_battle"
+version = "0.0.1"
+edition = "2024"
+rust-version = "1.97"
+description = "영문 · 국문 · 러스트 코드를 한 곳에서 연습하는 타자 프로그램"
+license = "MIT"
+repository = "https://github.com/ahnchul0-hue/keyboard_battle"
+publish = false
+
+[dependencies]
+# OS 글꼴·접근성·링크 열기는 쓰지 않으므로 기본 기능을 끄고 필요한 것만 켠다.
+eframe = { version = "0.37.0", default-features = false, features = [
+    "clipboard",
+    "default_fonts",
+    "wayland",
+    "wgpu",
+    "x11",
+] }
+
+# 브라우저용 빌드에서 화면을 여는 비동기 작업을 돌리는 데 쓴다.
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+wasm-bindgen-futures = "0.4"
+
+[profile.release]
+codegen-units = 1
+lto = "fat"
+panic = "abort"
+strip = true
+
+# 브라우저용 빌드. 내려받는 크기가 중요하므로 크기 위주로 최적화한다.
+# 디버그 정보만 걷어 내고 나머지 구획은 남겨야 wasm-bindgen이 쓰인 기능을 알아본다.
+[profile.web]
+inherits = "release"
+opt-level = "s"
+strip = "debuginfo"
